@@ -4932,11 +4932,19 @@ int create_table_impl(THD *thd,
     if (!frm_only)
     {
       debug_crash_here("ddl_log_create_before_create_table");
-      if (ha_create_table(thd, path.str, db.str, table_name.str, create_info,
-                          frm, 0))
+      ha_create_status create_err;
+      if ((create_err= ha_create_table(thd, path.str, db.str, table_name.str,
+                                       create_info, frm, 0)))
       {
         file->ha_create_partitioning_metadata(path.str, NULL, CHF_DELETE_FLAG);
         deletefrm(path.str);
+        if (create_err == HA_CREATE_FAILED_SECONDARY)
+        {
+          /* hlindex creation failed, need to revert to clean up
+          main table */
+          ddl_log_revert(thd, ddl_log_state_create);
+          goto func_exit;
+        }
         goto err;
       }
       debug_crash_here("ddl_log_create_after_create_table");
@@ -4972,7 +4980,7 @@ err:
     /* Table was never created, so we can ignore the ddl log entry */
     ddl_log_complete(ddl_log_state_create);
   }
-
+func_exit:
   THD_STAGE_INFO(thd, stage_after_create);
   delete file;
   DBUG_PRINT("exit", ("return: %d", error));
@@ -11804,7 +11812,7 @@ alter_copy:
 
   if (ha_create_table(thd, alter_ctx.get_tmp_path(),
                       alter_ctx.new_db.str, alter_ctx.new_name.str,
-                      create_info, &frm, frm_is_created))
+                      create_info, &frm, frm_is_created) != HA_CREATE_SUCCESS)
     goto err_new_table_cleanup;
 
   debug_crash_here("ddl_log_alter_after_create_table");
