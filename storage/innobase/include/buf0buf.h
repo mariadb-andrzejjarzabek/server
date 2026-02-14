@@ -1234,6 +1234,15 @@ public:
   static int madvise_do_dump() noexcept;
 #endif
 
+#if defined __linux__ || defined __FreeBSD__
+  /** Include or exclude the buffer pool in core dumps.
+  @param trim  whether to exclude the buffer pool from core dumps */
+  void core_dump_trim(bool dump) noexcept
+  {
+    madvise(memory, size_in_bytes_max, dump ? MADV_DODUMP : MADV_DONTDUMP);
+  }
+#endif
+
   /** Hash cell chain in page_hash_table */
   struct hash_chain
   {
@@ -1929,6 +1938,9 @@ private:
 
 /** The InnoDB buffer pool */
 extern buf_pool_t buf_pool;
+#if defined __linux__ || defined __FreeBSD__
+extern my_bool innodb_buffer_pool_in_core_dump;
+#endif
 
 inline buf_page_t *buf_pool_t::page_hash_table::get(const page_id_t id,
                                                     const hash_chain &chain)

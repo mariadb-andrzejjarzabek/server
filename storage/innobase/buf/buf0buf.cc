@@ -1381,7 +1381,9 @@ bool buf_pool_t::create() noexcept
     memory_unaligned= nullptr;
     goto oom;
   }
-  ut_dontdump(memory_unaligned, size_unaligned, true);
+#if defined __linux__ || defined __FreeBSD__
+  core_dump_trim(innodb_buffer_pool_in_core_dump);
+#endif
 #else
   update_malloc_size(actual_size, 0);
 #endif
@@ -1938,7 +1940,9 @@ ATTRIBUTE_COLD void buf_pool_t::resize(size_t size, THD *thd) noexcept
       return;
     }
 
-    ut_dontdump(memory + old_size, size - old_size, true);
+#if defined __linux__ || defined __FreeBSD__
+    core_dump_trim(innodb_buffer_pool_in_core_dump);
+#endif
     size_in_bytes_requested= size;
     size_in_bytes= size;
 

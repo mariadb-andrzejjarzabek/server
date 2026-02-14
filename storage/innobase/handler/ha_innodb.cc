@@ -225,6 +225,10 @@ enum default_row_format_enum {
 /** Whether ROW_FORMAT=COMPRESSED tables are read-only */
 static my_bool innodb_read_only_compressed;
 
+#if defined __linux__ || defined __FreeBSD__
+my_bool	innodb_buffer_pool_in_core_dump;
+#endif
+
 /** A dummy variable */
 static uint innodb_max_purge_lag_wait;
 
@@ -18787,6 +18791,21 @@ innodb_encrypt_tables_update(THD*, st_mysql_sys_var*, void*, const void* save)
 	mysql_mutex_lock(&LOCK_global_system_variables);
 }
 
+#if defined __linux__ || defined __FreeBSD__
+/** Update the system variable innodb_buffer_pool_in_core_dump.
+@param[in]	save	to-be-assigned value */
+static void innodb_buffer_pool_in_core_dump_update(THD*, st_mysql_sys_var*, void*,
+                                             const void* save)
+{
+  mysql_mutex_unlock(&LOCK_global_system_variables);
+  mysql_mutex_lock(&buf_pool.mutex);
+  innodb_buffer_pool_in_core_dump= *static_cast<const my_bool*>(save);
+  buf_pool.core_dump_trim(innodb_buffer_pool_in_core_dump);
+  mysql_mutex_unlock(&buf_pool.mutex);
+  mysql_mutex_lock(&LOCK_global_system_variables);
+}
+#endif
+
 static SHOW_VAR innodb_status_variables_export[]= {
 	SHOW_FUNC_ENTRY("Innodb", &show_innodb_vars),
 	{NullS, NullS, SHOW_LONG}
@@ -19300,6 +19319,21 @@ static MYSQL_SYSVAR_BOOL(buffer_pool_dump_at_shutdown, srv_buffer_pool_dump_at_s
   PLUGIN_VAR_RQCMDARG,
   "Dump the buffer pool into a file named @@innodb_buffer_pool_filename",
   NULL, NULL, TRUE);
+
+#if defined __linux__ || defined __FreeBSD__
+static constexpr bool BUFFER_POOL_IN_CORE_DEFAULT=
+#if defined(DBUG_OFF) && defined(MADV_DODUMP)
+  false;
+#else
+  true;
+#endif
+
+static MYSQL_SYSVAR_BOOL(
+  buffer_pool_in_core_dump , innodb_buffer_pool_in_core_dump, PLUGIN_VAR_NOCMDARG,
+  "This option allows dynamically including or excluding the buffer pool from the "
+  "core dump and is supported on Linux and FreeBSD.",
+  NULL, innodb_buffer_pool_in_core_dump_update, BUFFER_POOL_IN_CORE_DEFAULT);
+#endif
 
 static MYSQL_SYSVAR_ULONG(buffer_pool_dump_pct, srv_buf_pool_dump_pct,
   PLUGIN_VAR_RQCMDARG,
@@ -19995,6 +20029,9 @@ static struct st_mysql_sys_var* innobase_system_variables[]= {
   MYSQL_SYSVAR(buffer_pool_filename),
   MYSQL_SYSVAR(buffer_pool_dump_now),
   MYSQL_SYSVAR(buffer_pool_dump_at_shutdown),
+#if defined __linux__ || defined __FreeBSD__
+  MYSQL_SYSVAR(buffer_pool_in_core_dump),
+#endif
   MYSQL_SYSVAR(buffer_pool_dump_pct),
 #ifdef UNIV_DEBUG
   MYSQL_SYSVAR(buffer_pool_evict),
