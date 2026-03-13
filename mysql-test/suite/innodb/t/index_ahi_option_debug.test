@@ -41,56 +41,35 @@ BEGIN
   DECLARE start_val BIGINT;
   DECLARE end_val BIGINT;
   DECLARE i INT DEFAULT 0;
-  DECLARE dummy INT;
 
   SELECT count INTO start_val FROM information_schema.innodb_metrics WHERE name = 'adaptive_hash_searches';
 
-  IF p_table_name = 't1_ahi_default' THEN
-    WHILE i < p_rounds DO
-      IF p_idx_num = 1 THEN
-        SELECT COUNT(*) INTO dummy FROM t1_ahi_default FORCE INDEX(idx_1) WHERE col1 >= 0 AND col1 < (1 << 8);
-      ELSEIF p_idx_num = 2 THEN
-        SELECT COUNT(*) INTO dummy FROM t1_ahi_default FORCE INDEX(idx_2) WHERE col1 = 50 AND col2 >= 0 AND col2 < (1 << 16);
-      ELSEIF p_idx_num = 3 THEN
-        SELECT COUNT(*) INTO dummy FROM t1_ahi_default FORCE INDEX(idx_3) WHERE col1 = 50 AND col2 = (50 << 8) AND col3 >= 0 AND col3 < (1 << 24);
-      END IF;
-      SET i = i + 1;
-    END WHILE;
-  ELSEIF p_table_name = 't1_ahi_no' THEN
-    WHILE i < p_rounds DO
-      IF p_idx_num = 1 THEN
-        SELECT COUNT(*) INTO dummy FROM t1_ahi_no FORCE INDEX(idx_1) WHERE col1 >= 0 AND col1 < (1 << 8);
-      ELSEIF p_idx_num = 2 THEN
-        SELECT COUNT(*) INTO dummy FROM t1_ahi_no FORCE INDEX(idx_2) WHERE col1 = 50 AND col2 >= 0 AND col2 < (1 << 16);
-      ELSEIF p_idx_num = 3 THEN
-        SELECT COUNT(*) INTO dummy FROM t1_ahi_no FORCE INDEX(idx_3) WHERE col1 = 50 AND col2 = (50 << 8) AND col3 >= 0 AND col3 < (1 << 24);
-      END IF;
-      SET i = i + 1;
-    END WHILE;
-  ELSEIF p_table_name = 't1_ahi_yes' THEN
-    WHILE i < p_rounds DO
-      IF p_idx_num = 1 THEN
-        SELECT COUNT(*) INTO dummy FROM t1_ahi_yes FORCE INDEX(idx_1) WHERE col1 >= 0 AND col1 < (1 << 8);
-      ELSEIF p_idx_num = 2 THEN
-        SELECT COUNT(*) INTO dummy FROM t1_ahi_yes FORCE INDEX(idx_2) WHERE col1 = 50 AND col2 >= 0 AND col2 < (1 << 16);
-      ELSEIF p_idx_num = 3 THEN
-        SELECT COUNT(*) INTO dummy FROM t1_ahi_yes FORCE INDEX(idx_3) WHERE col1 = 50 AND col2 = (50 << 8) AND col3 >= 0 AND col3 < (1 << 24);
-      ELSEIF p_idx_num = 4 THEN
-        SELECT COUNT(*) INTO dummy FROM t1_ahi_yes FORCE INDEX(idx_4) WHERE col2 = (50 << 8) AND id = 50 /* Need PK as well since complete_fields is clamped to 2 (col2 + id) */;
-      ELSEIF p_idx_num = 5 THEN
-        SELECT COUNT(*) INTO dummy FROM t1_ahi_yes FORCE INDEX(idx_5) WHERE col3 = (50 << 16);
-      ELSEIF p_idx_num = 6 THEN
-        SELECT COUNT(*) INTO dummy FROM t1_ahi_yes FORCE INDEX(idx_6) WHERE col2 = (50 << 8) AND col1 = 50;
-      ELSEIF p_idx_num = 7 THEN
-        SELECT COUNT(*) INTO dummy FROM t1_ahi_yes FORCE INDEX(idx_7) WHERE col3 = (50 << 16) AND col2 = (50 << 8);
-      ELSEIF p_idx_num = 8 THEN
-        SELECT COUNT(*) INTO dummy FROM t1_ahi_yes FORCE INDEX(idx_8) WHERE col3 = (50 << 16) AND col2 = (50 << 8) AND col1 = 50 AND id = 50 /* Need PK as well since complete_fields is 4 (col3 + col2 + col1 + id) */;
-      END IF;
-      SET i = i + 1;
-    END WHILE;
+  IF p_idx_num = 1 THEN
+    SET @query= CONCAT('SELECT COUNT(*) INTO @dummy FROM ', p_table_name, ' FORCE INDEX(idx_1) WHERE col1 >= 0 AND col1 < (1 << 8)');
+  ELSEIF p_idx_num = 2 THEN
+    SET @query= CONCAT('SELECT COUNT(*) INTO @dummy FROM ', p_table_name, ' FORCE INDEX(idx_2) WHERE col1 = 50 AND col2 >= 0 AND col2 < (1 << 16)');
+  ELSEIF p_idx_num = 3 THEN
+    SET @query= CONCAT('SELECT COUNT(*) INTO @dummy FROM ', p_table_name, ' FORCE INDEX(idx_3) WHERE col1 = 50 AND col2 = (50 << 8) AND col3 >= 0 AND col3 < (1 << 24)');
+  ELSEIF p_idx_num = 4 THEN
+    SET @query= CONCAT('SELECT COUNT(*) INTO @dummy FROM ', p_table_name, ' FORCE INDEX(idx_4) WHERE col2 = (50 << 8) AND id = 50 /* Need PK as well since complete_fields is clamped to 2 (col2 + id) */');
+  ELSEIF p_idx_num = 5 THEN
+    SET @query= CONCAT('SELECT COUNT(*) INTO @dummy FROM ', p_table_name, ' FORCE INDEX(idx_5) WHERE col3 = (50 << 16)');
+  ELSEIF p_idx_num = 6 THEN
+    SET @query= CONCAT('SELECT COUNT(*) INTO @dummy FROM ', p_table_name, ' FORCE INDEX(idx_6) WHERE col2 = (50 << 8) AND col1 = 50');
+  ELSEIF p_idx_num = 7 THEN
+    SET @query= CONCAT('SELECT COUNT(*) INTO @dummy FROM ', p_table_name, ' FORCE INDEX(idx_7) WHERE col3 = (50 << 16) AND col2 = (50 << 8)');
+  ELSEIF p_idx_num = 8 THEN
+    SET @query= CONCAT('SELECT COUNT(*) INTO @dummy FROM ', p_table_name, ' FORCE INDEX(idx_8) WHERE col3 = (50 << 16) AND col2 = (50 << 8) AND col1 = 50 AND id = 50 /* Need PK as well since complete_fields is 4 (col3 + col2 + col1 + id) */');
   END IF;
 
-  IF dummy = 0 THEN
+  PREPARE stmt FROM @query;
+  WHILE i < p_rounds DO
+    EXECUTE stmt;
+    SET i = i + 1;
+  END WHILE;
+  DEALLOCATE PREPARE stmt;
+
+  IF COALESCE(@dummy, 0) = 0 THEN
     SELECT '# WARNING: No rows selected' AS warning_msg;
   END IF;
 

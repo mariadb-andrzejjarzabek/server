@@ -11,35 +11,48 @@
  col1 INT, col2 INT, col3 INT,
 @@ -14,10 +14,10 @@
  SET GLOBAL innodb_monitor_enable = module_adaptive_hash;
- CALL run_and_check_idx(1, 240);
+ CALL run_and_check_idx(1, 240, 't1');
  result_msg
 -# No AHI used in SELECT (idx_1)
 +# Used AHI in SELECT (idx_1)
- CALL run_and_check_idx(2, 240);
+ CALL run_and_check_idx(2, 240, 't1');
  result_msg
 -# No AHI used in SELECT (idx_2)
 +# Used AHI in SELECT (idx_2)
- CALL run_and_check_idx(3, 240);
+ CALL run_and_check_idx(3, 240, 't1');
  result_msg
  # No AHI used in SELECT (idx_3)
 @@ -27,17 +27,17 @@
  # No AHI used in SELECT (idx_1)
- CALL run_and_check_idx(2, 240);
+ CALL run_and_check_idx(2, 240, 't1');
  result_msg
 -# No AHI used in SELECT (idx_2)
 +# Used AHI in SELECT (idx_2)
- CALL run_and_check_idx(3, 240);
+ CALL run_and_check_idx(3, 240, 't1');
  result_msg
  # No AHI used in SELECT (idx_3)
  ALTER TABLE t1 adaptive_hash_index='ON', ALGORITHM=INSTANT, LOCK=NONE;
- CALL run_and_check_idx(1, 240);
+ CALL run_and_check_idx(1, 240, 't1');
  result_msg
 -# No AHI used in SELECT (idx_1)
 +# Used AHI in SELECT (idx_1)
- CALL run_and_check_idx(2, 240);
+ CALL run_and_check_idx(2, 240, 't1');
  result_msg
 -# No AHI used in SELECT (idx_2)
 +# Used AHI in SELECT (idx_2)
- CALL run_and_check_idx(3, 240);
+ CALL run_and_check_idx(3, 240, 't1');
+ result_msg
+ # No AHI used in SELECT (idx_3)
+@@ -56,10 +56,10 @@
+ INSERT INTO t1_part SELECT seq, seq, seq << 8, seq << 16 FROM seq_0_to_511;
+ CALL run_and_check_idx(1, 240, 't1_part');
+ result_msg
+-# No AHI used in SELECT (idx_1)
++# Used AHI in SELECT (idx_1)
+ CALL run_and_check_idx(2, 240, 't1_part');
+ result_msg
+-# No AHI used in SELECT (idx_2)
++# Used AHI in SELECT (idx_2)
+ CALL run_and_check_idx(3, 240, 't1_part');
  result_msg
  # No AHI used in SELECT (idx_3)
