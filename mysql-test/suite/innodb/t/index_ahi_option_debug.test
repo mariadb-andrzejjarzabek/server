@@ -76,13 +76,15 @@ BEGIN
       ELSEIF p_idx_num = 3 THEN
         SELECT COUNT(*) INTO dummy FROM t1_ahi_yes FORCE INDEX(idx_3) WHERE col1 = 50 AND col2 = (50 << 8) AND col3 >= 0 AND col3 < (1 << 24);
       ELSEIF p_idx_num = 4 THEN
-        SELECT COUNT(*) INTO dummy FROM t1_ahi_yes FORCE INDEX(idx_4) WHERE col2 = (50 << 8);
+        SELECT COUNT(*) INTO dummy FROM t1_ahi_yes FORCE INDEX(idx_4) WHERE col2 = (50 << 8) AND id = 50 /* Need PK as well since complete_fields is clamped to 2 (col2 + id) */;
       ELSEIF p_idx_num = 5 THEN
         SELECT COUNT(*) INTO dummy FROM t1_ahi_yes FORCE INDEX(idx_5) WHERE col3 = (50 << 16);
       ELSEIF p_idx_num = 6 THEN
         SELECT COUNT(*) INTO dummy FROM t1_ahi_yes FORCE INDEX(idx_6) WHERE col2 = (50 << 8) AND col1 = 50;
       ELSEIF p_idx_num = 7 THEN
         SELECT COUNT(*) INTO dummy FROM t1_ahi_yes FORCE INDEX(idx_7) WHERE col3 = (50 << 16) AND col2 = (50 << 8);
+      ELSEIF p_idx_num = 8 THEN
+        SELECT COUNT(*) INTO dummy FROM t1_ahi_yes FORCE INDEX(idx_8) WHERE col3 = (50 << 16) AND col2 = (50 << 8) AND col1 = 50 AND id = 50 /* Need PK as well since complete_fields is 4 (col3 + col2 + col1 + id) */;
       END IF;
       SET i = i + 1;
     END WHILE;
@@ -130,15 +132,17 @@ eval CALL run_and_check_idx($query_rounds, 2, 't1_ahi_yes');
 eval CALL run_and_check_idx($query_rounds, 3, 't1_ahi_yes');
 
 # Test "illegal" options
-ALTER TABLE t1_ahi_yes ADD INDEX idx_4 (col2) complete_fields=2;
-ALTER TABLE t1_ahi_yes ADD INDEX idx_5 (col3) bytes_from_incomplete_field=5;
-ALTER TABLE t1_ahi_yes ADD INDEX idx_6 (col2, col1) complete_fields=0 bytes_from_incomplete_field=0 for_equal_hash_point_to_last_record=0;
-ALTER TABLE t1_ahi_yes ADD INDEX idx_7 (col3, col2) complete_fields=0 bytes_from_incomplete_field=0 for_equal_hash_point_to_last_record=1;
+ALTER TABLE t1_ahi_yes ADD INDEX idx_4 (col2) complete_fields=3  /* complete_fields=3 > n_uniq==2 (col2 + id), will get clamped to 2 in innodb_ahi_enable() */;
+ALTER TABLE t1_ahi_yes ADD INDEX idx_5 (col3) bytes_from_incomplete_field=5  /* bytes_from_incomplete_field=5 > maximum of 4 (col3 INT), will get clamped in rec_fold() */;
+ALTER TABLE t1_ahi_yes ADD INDEX idx_6 (col2, col1) complete_fields=0 bytes_from_incomplete_field=0 for_equal_hash_point_to_last_record=0  /* complete_fields=0 bytes_from_incomplete_field=0 will disable AHI in innodb_ahi_enable() */;
+ALTER TABLE t1_ahi_yes ADD INDEX idx_7 (col3, col2) complete_fields=0 bytes_from_incomplete_field=0 for_equal_hash_point_to_last_record=1  /* complete_fields=0 bytes_from_incomplete_field=0 will disable AHI in innodb_ahi_enable() */;
+ALTER TABLE t1_ahi_yes ADD INDEX idx_8 (col3, col2, col1) complete_fields=4 bytes_from_incomplete_field=1  /* bytes_from_incomplete_field=1 is inapplicable since complete_fields=4 covers all unique fields (col3 + col2 + col1 + id), will get reset to 0 in innodb_ahi_enable() */;
 
 eval CALL run_and_check_idx($query_rounds, 4, 't1_ahi_yes');
 eval CALL run_and_check_idx($query_rounds, 5, 't1_ahi_yes');
 eval CALL run_and_check_idx($query_rounds, 6, 't1_ahi_yes');
 eval CALL run_and_check_idx($query_rounds, 7, 't1_ahi_yes');
+eval CALL run_and_check_idx($query_rounds, 8, 't1_ahi_yes');
 
 DROP PROCEDURE run_and_check_idx;
 DROP TABLE t1_ahi_yes;

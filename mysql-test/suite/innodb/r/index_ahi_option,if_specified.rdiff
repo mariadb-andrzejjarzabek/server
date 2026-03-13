@@ -1,5 +1,5 @@
 --- index_ahi_option.result
-+++ index_ahi_option,if_specified.result
++++ index_ahi_option,if_specified.reject
 @@ -2,7 +2,7 @@
  # Test InnoDB index-level adaptive_hash_index options
  #

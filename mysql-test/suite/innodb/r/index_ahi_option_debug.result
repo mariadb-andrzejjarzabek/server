@@ -47,10 +47,11 @@ result_msg
 CALL run_and_check_idx(240, 3, 't1_ahi_yes');
 result_msg
 # No AHI used in SELECT (idx_3)
-ALTER TABLE t1_ahi_yes ADD INDEX idx_4 (col2) complete_fields=2;
-ALTER TABLE t1_ahi_yes ADD INDEX idx_5 (col3) bytes_from_incomplete_field=5;
-ALTER TABLE t1_ahi_yes ADD INDEX idx_6 (col2, col1) complete_fields=0 bytes_from_incomplete_field=0 for_equal_hash_point_to_last_record=0;
-ALTER TABLE t1_ahi_yes ADD INDEX idx_7 (col3, col2) complete_fields=0 bytes_from_incomplete_field=0 for_equal_hash_point_to_last_record=1;
+ALTER TABLE t1_ahi_yes ADD INDEX idx_4 (col2) complete_fields=3  /* complete_fields=3 > n_uniq==2 (col2 + id), will get clamped to 2 in innodb_ahi_enable() */;
+ALTER TABLE t1_ahi_yes ADD INDEX idx_5 (col3) bytes_from_incomplete_field=5  /* bytes_from_incomplete_field=5 > maximum of 4 (col3 INT), will get clamped in rec_fold() */;
+ALTER TABLE t1_ahi_yes ADD INDEX idx_6 (col2, col1) complete_fields=0 bytes_from_incomplete_field=0 for_equal_hash_point_to_last_record=0  /* complete_fields=0 bytes_from_incomplete_field=0 will disable AHI in innodb_ahi_enable() */;
+ALTER TABLE t1_ahi_yes ADD INDEX idx_7 (col3, col2) complete_fields=0 bytes_from_incomplete_field=0 for_equal_hash_point_to_last_record=1  /* complete_fields=0 bytes_from_incomplete_field=0 will disable AHI in innodb_ahi_enable() */;
+ALTER TABLE t1_ahi_yes ADD INDEX idx_8 (col3, col2, col1) complete_fields=4 bytes_from_incomplete_field=1  /* bytes_from_incomplete_field=1 is inapplicable since complete_fields=4 covers all unique fields (col3 + col2 + col1 + id), will get reset to 0 in innodb_ahi_enable() */;
 CALL run_and_check_idx(240, 4, 't1_ahi_yes');
 result_msg
 # No AHI used in SELECT (idx_4)
@@ -63,6 +64,9 @@ result_msg
 CALL run_and_check_idx(240, 7, 't1_ahi_yes');
 result_msg
 # No AHI used in SELECT (idx_7)
+CALL run_and_check_idx(240, 8, 't1_ahi_yes');
+result_msg
+# No AHI used in SELECT (idx_8)
 DROP PROCEDURE run_and_check_idx;
 DROP TABLE t1_ahi_yes;
 SET @@global.innodb_adaptive_hash_index = @start_global_value;
