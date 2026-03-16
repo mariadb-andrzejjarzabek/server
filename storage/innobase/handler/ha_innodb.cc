@@ -2926,8 +2926,8 @@ static void innodb_ahi_enable(dict_table_t *innodb_table,
     const KEY &key= table->key_info[i];
     dict_index_t *index=
         dict_table_get_index_on_name(innodb_table, key.name.str);
-    if (!index)
-      continue;
+    if (!index || !index->n_uniq)
+      continue;  /* FTS indexes have n_uniq == 0; AHI is not applicable */
 
     ut_ad(key.option_struct);
     uint64_t fields= key.option_struct->complete_fields;
@@ -2935,7 +2935,6 @@ static void innodb_ahi_enable(dict_table_t *innodb_table,
     ut_ad(fields == ULONGLONG_MAX || fields <= max_complete_fields);
     ut_ad(bytes == ULONGLONG_MAX || bytes <= max_bytes_from_incomplete_field);
     const uint16_t n_uniq= index->n_uniq;
-    ut_ad(n_uniq > 0);  /* n_uniq is defined for user visible keys */
     /* Clamp fields to the number of unique index fields */
     if (UNIV_UNLIKELY(fields != ULONGLONG_MAX && fields > n_uniq))
       fields= n_uniq;
