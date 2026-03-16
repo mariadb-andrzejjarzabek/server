@@ -2923,7 +2923,7 @@ static void innodb_ahi_enable(dict_table_t *innodb_table,
     &UT_LIST_GET_FIRST(innodb_table->indexes)->search_info;
   for (auto i= table->s->keys; i--; )
   {
-    const KEY &key= table->key_info[i];
+    const KEY &key= table->s->key_info[i];
     dict_index_t *index=
         dict_table_get_index_on_name(innodb_table, key.name.str);
     if (!index || !index->n_uniq)
