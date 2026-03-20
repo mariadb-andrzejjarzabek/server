@@ -2524,6 +2524,23 @@ Sp_handler::sp_cache_routine_reentrant(THD *thd,
 }
 
 
+sp_package *Sp_handler::find_package_spec(THD *thd,
+                                          const Lex_ident_db &db,
+                                          const LEX_CSTRING &package)
+{
+  sp_head *sp= nullptr;
+  Database_qualified_name tmp(db, package);
+
+  Dummy_error_handler err_handler;
+  thd->push_internal_handler(&err_handler);
+  bool ret= sp_handler_package_spec.sp_cache_routine_reentrant(thd, &tmp, &sp);
+  thd->pop_internal_handler();
+
+  sp_package *spec= (!ret && sp) ? sp->get_package() : nullptr;
+  return spec;
+}
+
+
 /**
   Check if a routine has a declaration in the CREATE PACKAGE statement,
   by looking up in thd->sp_package_spec_cache, and by loading from mysql.proc
@@ -2557,15 +2574,7 @@ is_package_public_routine(THD *thd,
                           const LEX_CSTRING &routine,
                           enum_sp_type type)
 {
-  sp_head *sp= NULL;
-  Database_qualified_name tmp(db, package);
-
-  Dummy_error_handler err_handler;
-  thd->push_internal_handler(&err_handler);
-  bool ret= sp_handler_package_spec.sp_cache_routine_reentrant(thd, &tmp, &sp);
-  thd->pop_internal_handler();
-
-  sp_package *spec= (!ret && sp) ? sp->get_package() : NULL;
+  sp_package *spec= Sp_handler::find_package_spec(thd, db, package);
   return spec && spec->m_routine_declarations.find(routine, type);
 }
 

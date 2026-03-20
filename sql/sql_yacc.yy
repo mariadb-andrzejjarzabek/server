@@ -3739,6 +3739,30 @@ sp_decl_variable_list:
             $$.init_using_vars($1);
           }
         | sp_decl_variable_list_anchored
+        | sp_decl_idents_init_vars
+          sp_decl_ident '.' ident
+          sp_opt_default
+          {
+            if (unlikely(Lex->sp_variable_declarations_qualified_finalize(
+                                                                thd, $1,
+                                                                $2, $4,
+                                                                $5.expr,
+                                                                $5.expr_str)))
+              MYSQL_YYABORT;
+            $$.init_using_vars($1);
+          }
+        | sp_decl_idents_init_vars
+          sp_decl_ident '.' ident '.' ident
+          sp_opt_default
+          {
+            if (unlikely(Lex->sp_variable_declarations_qualified_finalize(
+                                                                thd, $1,
+                                                                $2, $4, $6,
+                                                                $7.expr,
+                                                                $7.expr_str)))
+              MYSQL_YYABORT;
+            $$.init_using_vars($1);
+          }
         ;
 
 sp_decl_handler:
@@ -19858,6 +19882,16 @@ sf_return_type:
                        Qualified_column_ident(thd, &$1, &$3, &$5)))
               MYSQL_YYABORT;
           }
+        | sp_decl_ident '.' ident '.' ident
+          {
+            if (Lex->sf_return_fill_definition_qualified(thd, $1, $3, $5))
+              MYSQL_YYABORT;
+          }
+        | sp_decl_ident '.' ident
+          {
+            if (Lex->sf_return_fill_definition_qualified(thd, $1, $3))
+              MYSQL_YYABORT;
+          }
         ;
 
 
@@ -20349,7 +20383,7 @@ package_implementation_routine_definition:
             pkg->m_current_routine= NULL;
             $$.init();
           }
-        | package_specification_element { $$.init(); }
+        | package_specification_routine { $$.init(); }
         ;
 
 
@@ -20402,7 +20436,7 @@ package_specification_element_list:
         | package_specification_element_list package_specification_element
         ;
 
-package_specification_element:
+package_specification_routine:
           FUNCTION_SYM package_specification_function ';'
           {
             sp_package *pkg= Lex->get_sp_package();
@@ -20417,6 +20451,13 @@ package_specification_element:
               MYSQL_YYABORT;
             pkg->m_current_routine= NULL;
           }
+        ;
+
+package_specification_element:
+          package_specification_routine
+%ifdef ORACLE
+        | sp_decl_type ';'
+%endif
         ;
 
 
@@ -20461,6 +20502,18 @@ sp_param_init_vars:
           {
             if (unlikely(Lex->sphead->spvar_fill_row(thd, $$= $1, $3)))
               MYSQL_YYABORT;
+          }
+        | sp_param_name_and_mode_init_vars sp_decl_ident '.' ident
+          {
+            if (unlikely(Lex->sp_param_fill_definition_qualified($$= $1,
+                                                                 $2, $4)))
+              MYSQL_YYABORT;
+          }
+        | sp_param_name_and_mode_init_vars sp_decl_ident '.' ident '.' ident
+          {
+             if (unlikely(Lex->sp_param_fill_definition_qualified($$= $1,
+                                                                  $2, $4, $6)))
+               MYSQL_YYABORT;
           }
         | sp_param_anchored
         ;

@@ -4056,10 +4056,32 @@ public:
   sp_variable *sp_param_init(LEX_CSTRING *name);
   bool sp_param_fill_definition(sp_variable *spvar,
                                 const Lex_field_type_st &def);
+  bool sp_param_fill_definition_qualified(sp_variable *spvar,
+                                          const Lex_ident_db_normalized &db,
+                                          const Lex_ident_sys_st &package,
+                                          const Lex_ident_sys_st &type);
+  bool sp_param_fill_definition_qualified(sp_variable *spvar,
+                                          const Lex_ident_sys_st &db,
+                                          const Lex_ident_sys_st &package,
+                                          const Lex_ident_sys_st &type);
+  bool sp_param_fill_definition_qualified(sp_variable *spvar,
+                                          const Lex_ident_sys_st &package,
+                                          const Lex_ident_sys_st &type);
   bool sp_param_set_default_and_finalize(sp_variable *spvar,
                                         Item *default_value,
                                         const LEX_CSTRING &expr_str);
   bool sf_return_fill_definition(const Lex_field_type_st &def);
+  bool sf_return_fill_definition_qualified(THD *thd,
+                                           const Lex_ident_db_normalized &db,
+                                           const Lex_ident_sys_st &package,
+                                           const Lex_ident_sys_st &type);
+  bool sf_return_fill_definition_qualified(THD *thd,
+                                           const Lex_ident_sys_st &db,
+                                           const Lex_ident_sys_st &package,
+                                           const Lex_ident_sys_st &type);
+  bool sf_return_fill_definition_qualified(THD *thd,
+                                           const Lex_ident_sys_st &package,
+                                           const Lex_ident_sys_st &type);
   bool sf_return_fill_definition_row(Row_definition_list *def);
   bool sf_return_fill_definition_rowtype_of(const Qualified_column_ident &col);
   bool sf_return_fill_definition_type_of(const Qualified_column_ident &col);
@@ -4167,6 +4189,23 @@ public:
   void sp_variable_declarations_init(THD *thd, int nvars);
   bool sp_variable_declarations_finalize(THD *thd, int nvars,
                                          const Column_definition *cdef,
+                                         Item *def,
+                                         const LEX_CSTRING &expr_str);
+  bool sp_variable_declarations_qualified_finalize(THD *thd, int nvars,
+                                         const Lex_ident_db_normalized &db,
+                                         const Lex_ident_sys_st &package,
+                                         const Lex_ident_sys_st &type,
+                                         Item *def,
+                                         const LEX_CSTRING &expr_str);
+  bool sp_variable_declarations_qualified_finalize(THD *thd, int nvars,
+                                         const Lex_ident_sys_st &db,
+                                         const Lex_ident_sys_st &package,
+                                         const Lex_ident_sys_st &type,
+                                         Item *def,
+                                         const LEX_CSTRING &expr_str);
+  bool sp_variable_declarations_qualified_finalize(THD *thd, int nvars,
+                                         const Lex_ident_sys_st &package,
+                                         const Lex_ident_sys_st &type,
                                          Item *def,
                                          const LEX_CSTRING &expr_str);
   bool sp_variable_declarations_set_default(THD *thd, int nvars, Item *def,

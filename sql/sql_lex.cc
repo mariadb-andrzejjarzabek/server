@@ -49,6 +49,21 @@ void LEX::parse_error(uint err_number)
 }
 
 
+// TODO-TYPE: move as a method
+// e.g. to Qualified_ident ?
+static void raise_unknown_type(const Lex_ident_db_normalized &db,
+                               const Lex_ident_sys_st &package,
+                               const Lex_ident_sys_st &type)
+{
+  char buf[128];
+  my_snprintf(buf, sizeof(buf), "%.*sQ.%.*sQ.%.*sQ",
+              (int) db.length, db.str,
+              (int) package.length, package.str,
+              (int) type.length, type.str);
+  my_error(ER_UNKNOWN_DATA_TYPE, MYF(0), buf);
+}
+
+
 /**
   LEX_STRING constant for null-string to be used in parser and other places.
 */
@@ -6753,6 +6768,48 @@ bool LEX::sp_param_fill_definition(sp_variable *spvar,
 }
 
 
+bool LEX::sp_param_fill_definition_qualified(sp_variable *spvar,
+                                             const Lex_ident_db_normalized &dbn,
+                                             const Lex_ident_sys_st &package,
+                                             const Lex_ident_sys_st &type)
+{
+  sp_type_def *tdef;
+  sp_package *spec= Sp_handler::find_package_spec(thd, dbn, package);
+  if (!spec || !(tdef= spec->get_parse_context()->find_type_def(type, false)))
+  {
+    raise_unknown_type(dbn, package, type);
+    return true;
+  }
+  Lex_field_type_st lex_field_type;
+  lex_field_type.set(tdef->type_handler(), nullptr/*CHARSET_INFO*/);
+  last_field->set_attr_const_void_ptr(0, tdef);
+  return sp_param_fill_definition(spvar, lex_field_type);
+}
+
+
+bool LEX::sp_param_fill_definition_qualified(sp_variable *spvar,
+                                             const Lex_ident_sys_st &db,
+                                             const Lex_ident_sys_st &package,
+                                             const Lex_ident_sys_st &type)
+{
+  Lex_ident_db_normalized dbn= thd->to_ident_db_normalized_with_error(db);
+  if (!dbn.str)
+    return true; // Bad DB identifier
+  return sp_param_fill_definition_qualified(spvar, dbn, package, type);
+}
+
+
+bool LEX::sp_param_fill_definition_qualified(sp_variable *spvar,
+                                             const Lex_ident_sys_st &package,
+                                             const Lex_ident_sys_st &type)
+{
+  Lex_ident_db_normalized dbn= copy_db_normalized();
+  if (!dbn.str)
+    return true; // Current DB is not set
+  return sp_param_fill_definition_qualified(spvar, dbn, package, type);
+}
+
+
 bool LEX::sp_param_set_default_and_finalize(sp_variable *spvar,
                                         Item *default_value,
                                         const LEX_CSTRING &expr_str)
@@ -6810,6 +6867,62 @@ bool LEX::sf_return_fill_definition(const Lex_field_type_st &def)
   return
     last_field->set_attributes(thd, def, COLUMN_DEFINITION_FUNCTION_RETURN) ||
     sphead->fill_field_definition(thd, last_field);
+}
+
+
+bool LEX::sf_return_fill_definition_qualified(THD *thd,
+                                            const Lex_ident_db_normalized &dbn,
+                                            const Lex_ident_sys_st &package,
+                                            const Lex_ident_sys_st &type)
+{
+  /*
+    TODO: the below crashes in sp_head::sp_returns_type:
+    does not expect non-scalar type:
+SET sql_mode=ORACLE;
+DELIMITER $$
+CREATE OR REPLACE FUNCTION f1() RETURN pkg1.t1 AS
+  v0 pkg1.t1:= (1, 2);
+BEGIN
+  RETURN v0;
+END;
+$$
+DELIMITER ;
+
+  */
+  sp_type_def *tdef;
+  sp_package *spec= Sp_handler::find_package_spec(thd, dbn, package);
+  if (!spec || !(tdef= spec->get_parse_context()->find_type_def(type, false)))
+  {
+    raise_unknown_type(dbn, package, type);
+    return true;
+  }
+  Lex_field_type_st lex_field_type;
+  lex_field_type.set(tdef->type_handler(), nullptr/*CHARSET_INFO*/);
+  last_field->set_attr_const_void_ptr(0, tdef);
+  return sf_return_fill_definition(lex_field_type);
+}
+
+
+bool LEX::sf_return_fill_definition_qualified(THD *thd,
+                                              const Lex_ident_sys_st &db,
+                                              const Lex_ident_sys_st &package,
+                                              const Lex_ident_sys_st &type)
+{
+  Lex_ident_db_normalized dbn= thd->to_ident_db_normalized_with_error(db);
+  if (!dbn.str)
+    return true; // Bad DB identifier
+  return sf_return_fill_definition_qualified(thd, dbn, package, type);
+}
+
+
+bool LEX::sf_return_fill_definition_qualified(THD *thd,
+                                              const Lex_ident_sys_st &package,
+                                              const Lex_ident_sys_st &type)
+{
+  Lex_ident_db_normalized dbn= copy_db_normalized();
+  if (!dbn.str)
+    return true; // Current DB is not set
+   return sf_return_fill_definition_qualified(thd, dbn, package, type);
 }
 
 
@@ -7083,6 +7196,60 @@ bool LEX::sp_variable_declarations_finalize(THD *thd, int nvars,
     return true;
   spcont->declare_var_boundary(0);
   return sphead->restore_lex(thd);
+}
+
+
+bool LEX::sp_variable_declarations_qualified_finalize(THD *thd, int nvars,
+                                           const Lex_ident_db_normalized &db,
+                                           const Lex_ident_sys_st &package,
+                                           const Lex_ident_sys_st &type,
+                                           Item *def,
+                                           const LEX_CSTRING &expr_str)
+{
+  sp_type_def *tdef;
+  sp_package *spec= Sp_handler::find_package_spec(thd, db, package);
+  if (!spec || !(tdef= spec->get_parse_context()->find_type_def(type, false)))
+  {
+    raise_unknown_type(db, package, type);
+    return true;
+  }
+  Lex_field_type_st lex_field_type;
+  lex_field_type.set(tdef->type_handler(), nullptr/*CHARSET_INFO*/);
+  last_field->set_attr_const_void_ptr(0, tdef);
+  last_field->set_attributes(thd, lex_field_type,
+                             COLUMN_DEFINITION_ROUTINE_LOCAL);
+  return sp_variable_declarations_finalize(thd, nvars,
+                                           last_field, def, expr_str);
+}
+
+
+bool LEX::sp_variable_declarations_qualified_finalize(THD *thd, int nvars,
+                                                const Lex_ident_sys_st &db,
+                                                const Lex_ident_sys_st &package,
+                                                const Lex_ident_sys_st &type,
+                                                Item *def,
+                                                const LEX_CSTRING &expr_str)
+{
+  Lex_ident_db_normalized dbn= thd->to_ident_db_normalized_with_error(db);
+  return sp_variable_declarations_qualified_finalize(thd, nvars,
+                                                     dbn, package, type,
+                                                     def, expr_str);
+}
+
+
+bool LEX::sp_variable_declarations_qualified_finalize(THD *thd, int nvars,
+                                                const Lex_ident_sys_st &package,
+                                                const Lex_ident_sys_st &type,
+                                                Item *def,
+                                                const LEX_CSTRING &expr_str)
+{
+  Lex_ident_db_normalized dbn= copy_db_normalized();
+  if (!dbn.str)
+    return true; // Current DB is not set
+  Lex_ident_sys db_sys(dbn.str, dbn.length); // TODO: resolve through path?
+  return sp_variable_declarations_qualified_finalize(thd, nvars, db_sys,
+                                                     package, type,
+                                                     def, expr_str);
 }
 
 
