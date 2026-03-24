@@ -2701,7 +2701,7 @@ static uint dump_events_for_db(char *db)
                                           C_STRING_WITH_LEN(" EVENT"));
 
           fprintf(sql_file,
-                  "/*!50106 %s */ %s\n",
+                  "/*!50106 %s \n*/ %s\n",
                   (const char *) (query_str != NULL ? query_str : row[3]),
                   (const char *) delimiter);
 
@@ -2927,7 +2927,8 @@ static uint dump_routines_for_db(char *db)
 
             fprintf(sql_file,
                     "DELIMITER ;;\n"
-                    "%s ;;\n"
+                    "%s\n"
+                    ";;\n"
                     "DELIMITER ;\n",
                     (const char *) row[2]);
 
@@ -3820,7 +3821,7 @@ static int dump_trigger(FILE *sql_file, MYSQL_RES *show_create_trigger_rs,
                                     C_STRING_WITH_LEN(" TRIGGER"));
     fprintf(sql_file,
             "DELIMITER ;;\n"
-            "/*!50003 %s */;;\n"
+            "/*!50003 %s \n*/;;\n"
             "DELIMITER ;\n",
             (const char *) (query_str != NULL ? query_str : row[2]));
 
