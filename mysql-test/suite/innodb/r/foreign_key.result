@@ -1231,4 +1231,15 @@ Warnings:
 Note	1091	Can't DROP FOREIGN KEY `f1`; check that it exists
 Note	1091	Can't DROP FOREIGN KEY `f1`; check that it exists
 DROP TABLE t2, t1;
+#
+#  MDEV-24356 InnoDB: Failing assertion: len < sizeof(tmp_buff)
+#               in get_foreign_key_info
+#
+CREATE DATABASE `db_new..............................................end`;
+USE `db_new..............................................end`;
+SET STATEMENT foreign_key_checks=0 for
+CREATE TABLE t1(f1 INT UNSIGNED,f2 INT UNSIGNED,
+FOREIGN KEY (f2)REFERENCES t2 (f1))ENGINE=InnoDB;
+ALTER TABLE t1 FORCE;
+DROP DATABASE `db_new..............................................end`;
 # End of 10.6 tests
