@@ -449,7 +449,10 @@ void subst_vcol_if_compatible(Vcol_subst_context *ctx,
   THD *thd= ctx->thd;
 
   const char *fail_cause= NULL;
-  if (vcol_expr->type_handler_for_comparison() !=
+  DBUG_ASSERT(vcol_field->vcol_info);
+  if (vcol_field->vcol_info->flags & VCOL_TRUNCATED)
+    fail_cause= "truncation occurred";
+  else if (vcol_expr->type_handler_for_comparison() !=
       vcol_field->type_handler_for_comparison() ||
       (vcol_expr->maybe_null() && !vcol_field->maybe_null()))
     fail_cause="type mismatch";
