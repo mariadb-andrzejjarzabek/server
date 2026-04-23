@@ -16,6 +16,7 @@
 #include "maria_def.h"
 #include "ma_backup.h"
 #include <mysqld_error.h>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -32,7 +33,6 @@
 */
 
 using namespace std::string_literals;
-
 namespace
 {
   class Source_dir
@@ -76,8 +76,35 @@ namespace
   public:
     explicit Aria_backup(THD *thd, backup_target tgt) noexcept
     : target(tgt)
+#ifndef _WIN32
+    , datadir_fd(open(maria_data_root, O_DIRECTORY))
     {
-       translog_disable_purge();
+      if (datadir_fd < 0)
+      {
+        my_error(ER_CANT_READ_DIR, MYF(0), maria_data_root, errno);
+        return;
+      }
+#else
+    {
+#endif // _WIN32
+      translog_disable_purge();
+    }
+
+    bool is_initialized() const noexcept
+    {
+#ifndef _WIN32
+      return datadir_fd >= 0;
+#else
+      return true;
+#endif // _WIN32
+    }
+
+    ~Aria_backup() noexcept
+    {
+#ifndef _WIN32
+      if (datadir_fd >= 0)
+        close(datadir_fd);
+#endif // _WIN32
     }
 
     int end(THD *thd, bool abort) noexcept
@@ -94,8 +121,11 @@ namespace
     }
   private:
     backup_target target;
-    static const std::vector<std::string> data_exts;;
-    const std::string log_file_prefix {"aria_log."};
+#ifndef _WIN32
+    const int datadir_fd;
+#endif
+    static const std::vector<std::string> data_exts;
+    static const std::string log_file_prefix;
     using dir_name = std::string;
     using dir_contents = std::vector<std::string>;
     using database_dir = std::pair<dir_name, dir_contents>;
@@ -160,18 +190,39 @@ namespace
     {
       for (const database_dir& dir : database_dirs)
       {
-         const char* dir_name = dir.first.c_str();
-         if (mkdirat(target.fd, dir_name, 0777) != 0)
-         {
-            if (errno != EEXIST)
-            {
-              my_error(ER_CANT_CREATE_FILE, MYF(0), dir_name, errno);
-              return 1;
-            }
-         }
-         if (copy_database(dir) != 0)
-           return 1;
+        const char* dir_name = dir.first.c_str();
+        if (ensure_target_subdir(dir_name) != 0)
+        {
+          my_error(ER_CANT_CREATE_FILE, MYF(0), dir_name, errno);
+          return 1;
+        }
+        if (copy_database(dir) != 0)
+          return 1;
       }
+      return 0;
+    }
+
+    /*
+       Create directory in the target directory if it does not exist.
+       Return 0 on success, non-0 on failure. Set errno in case of failure
+    */
+    int ensure_target_subdir(const char* name) noexcept
+    {
+#ifdef _WIN32
+      std::string dir_path= targetPath() + "/" + name;
+      if (!CreateDirectory(dir_path.c_str(), nullptr))
+      {
+        DWORD err = GetLastError();
+        if (err != ERROR_ALREADY_EXISTS)
+        {
+          my_osmaperr(err);
+          return 1;
+        }
+      }
+#else
+      if (mkdirat(target.fd, name, 0777) != 0)
+        return (errno != EEXIST);
+#endif
       return 0;
     }
 
@@ -205,13 +256,12 @@ namespace
 
     int copy_file(const std::string &path) const noexcept
     {
-      std::string src_path= std::string(maria_data_root) + "/" + path;
-#ifdef __APPLE__
+#ifndef _WIN32
       int ret_val = 0;
-      int src_fd = open(src_path.c_str(), O_RDONLY);
+      int src_fd = openat(datadir_fd, path.c_str(), O_RDONLY);
       if (src_fd < 0)
       {
-        my_error(ER_CANT_OPEN_FILE, MYF(0), src_path.c_str(), errno);
+        my_error(ER_CANT_OPEN_FILE, MYF(0), path.c_str(), errno);
         return 1;
       }
       int tgt_fd = openat(target.fd, path.c_str(),
@@ -222,7 +272,7 @@ namespace
         ret_val = 1;
         goto finish;
       }
-      if (fcopyfile(src_fd, tgt_fd, nullptr, COPYFILE_DATA) != 0)
+      if (copy_entire_file(src_fd, tgt_fd) != 0)
       {
         my_error(ER_ERROR_ON_WRITE, MYF(0), path.c_str(), errno);
         ret_val = 1;
@@ -232,7 +282,16 @@ namespace
       close(src_fd);
       return ret_val;
 #else
-      return 1;
+      std::string src_path= std::string(maria_data_root) + "/" + path;
+      std::string dest_path= targetPath() + "/" + path;
+      if(!CopyFileExA(src_path.c_str(), dest_path.c_str(), nullptr, nullptr, nullptr,
+                      COPY_FILE_NO_BUFFERING))
+      {
+        my_osmaperr(GetLastError());
+        my_error(ER_CANT_CREATE_FILE, MYF(0), dest_path.c_str(), errno);
+        return 1;
+      }
+      return 0;
 #endif
     }
 
@@ -244,7 +303,8 @@ namespace
         if (ends_with(file_name, ext))
           return true;
       }
-      return false;
+      /* As a stop-gap db/opt files are also copied here, this should be done in SQL layer. */
+      return !strcmp(file_name, "db.opt");
     }
 
     static bool ends_with(const char* str, const std::string& suffix) noexcept
@@ -262,9 +322,19 @@ namespace
     {
       return strncmp(str, prefix.data(), prefix.size()) == 0;
     }
+
+#ifdef _WIN32
+    /** @return the target directory path */
+    std::string targetPath() const
+    {
+      return std::string(target.path);
+    }
+#endif
   };
 
-  const std::vector<std::string> Aria_backup::data_exts {".MAD"s, ".MAI"s};
+  /* TODO: .frm failes are nto Aria-specific, they are copied here as a stop-gap */
+  const std::vector<std::string> Aria_backup::data_exts {".MAD"s, ".MAI"s, ".frm"s};
+  const std::string Aria_backup::log_file_prefix {"aria_log."};
 
   std::unique_ptr<Aria_backup> aria_backup;
 }
@@ -272,7 +342,7 @@ namespace
 int aria_backup_start(THD *thd, backup_target target) noexcept
 {
   aria_backup= std::make_unique<Aria_backup>(thd, target);
-  return 0;
+  return !aria_backup->is_initialized();
 }
 
 int aria_backup_step(THD *thd) noexcept
@@ -286,4 +356,3 @@ int aria_backup_end(THD *thd, bool abort) noexcept
   aria_backup.reset();
   return ret_val;
 }
-

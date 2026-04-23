@@ -20,6 +20,12 @@
 #include "trx0trx.h"
 #include <vector>
 
+#ifdef __APPLE__
+# include <sys/attr.h>
+# include <sys/clonefile.h>
+# include <copyfile.h>
+#endif
+
 /** Associate a transaction with the current session
 @param thd   session
 @return InnoDB transaction */

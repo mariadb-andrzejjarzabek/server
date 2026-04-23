@@ -13,8 +13,11 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335  USA */
 
+#pragma once
+
 /* BACKUP SERVER support for Aria engine. */
 
+#include <sql_backup_interface.h>
 #include <handler.h>
 
 /**
