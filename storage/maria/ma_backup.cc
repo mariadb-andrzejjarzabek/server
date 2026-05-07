@@ -332,8 +332,10 @@ namespace
 #endif
   };
 
-  /* TODO: .frm failes are nto Aria-specific, they are copied here as a stop-gap */
-  const std::vector<std::string> Aria_backup::data_exts {".MAD"s, ".MAI"s, ".frm"s};
+  /* TODO: .frm failes are not Aria-specific, .MYD and .MYI are MyISAM files;
+   they are copied here as a stop-gap */
+  const std::vector<std::string>
+    Aria_backup::data_exts {".MAD"s, ".MAI"s, "MYD"s, "MYI"s, "frm"s};
   const std::string Aria_backup::log_file_prefix {"aria_log."};
 
   std::unique_ptr<Aria_backup> aria_backup;

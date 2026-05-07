@@ -1,0 +1,38 @@
+--source include/not_windows.inc
+--source include/have_innodb.inc
+
+--echo Prepare database
+CREATE TABLE tinno (i INTEGER) ENGINE=InnoDB;
+INSERT INTO tinno VALUES (1), (2), (3), (4);
+CREATE TABLE tariatr (i INTEGER) ENGINE=Aria TRANSACTIONAL=1;
+INSERT INTO tariatr VALUES (2), (3), (5), (7);
+CREATE TABLE tariant (i INTEGER) ENGINE=Aria TRANSACTIONAL=0;
+INSERT INTO tariant VALUES (1), (1), (2), (3), (5);
+
+--echo Back up the database
+evalp BACKUP SERVER TO '$MYSQLTEST_VARDIR/some_directory';
+
+--echo Restore the database
+--disable_query_log
+call mtr.add_suppression("InnoDB: Did not find any checkpoint after LSN=");
+call mtr.add_suppression("InnoDB: Renaming ib_[0-9]+.log to ib_logfile0");
+call mtr.add_suppression("mariadbd: Got error '145 \"Table was marked as crashed and should be repaired\"' for ");
+call mtr.add_suppression("Checking table: ");
+--enable_query_log
+--let $restart_parameters=--datadir=$MYSQLTEST_VARDIR/some_directory
+--source include/restart_mysqld.inc
+
+--echo Check contents after restore
+SELECT * FROM tinno;
+SELECT * FROM tariatr;
+SELECT * FROM tariant;
+
+--echo Restart database in original data directory 
+--let $restart_parameters=
+--source include/restart_mysqld.inc
+
+--echo Clean up
+DROP TABLE tinno;
+DROP TABLE tariatr;
+DROP TABLE tariant;
+--rmdir $MYSQLTEST_VARDIR/some_directory
