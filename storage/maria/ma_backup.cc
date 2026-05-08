@@ -141,6 +141,8 @@ namespace
         return 1;
       if (copy_control_file())
         return 1;
+      if(translog_flush(translog_get_horizon()))
+        return 1;
       if (copy_logs())
         return 1;
       return 0;
