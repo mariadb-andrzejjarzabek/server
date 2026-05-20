@@ -1496,6 +1496,27 @@ struct transaction_participant
   ulonglong (*prepare_commit_versioned)(THD *thd, ulonglong *trx_id);
 };
 
+/** BACKUP SERVER target */
+struct backup_target
+{
+#ifdef _WIN32
+  /** Target directory path name */
+  const char *path;
+  union
+  {
+    /** Target pipe, if path==reinterpret_cast<const char*>(-1) */
+    HANDLE pipe;
+    /** Target socket, if path==nullptr */
+    SOCKET socket;
+  };
+#else
+  /** Target file descriptor */
+  int fd;
+  /** whether the fd is a directory handle */
+  bool directory;
+#endif
+};
+
 /*
   handlerton is a singleton structure - one instance per storage engine -
   to provide access to storage engine functionality that works on the
@@ -1901,11 +1922,11 @@ struct handlerton : public transaction_participant
   /**
      Start of BACKUP SERVER: collect all files to be backed up
      @param thd     current session
-     @param target  target directory
+     @param target  backup target
      @return error code
      @retval 0 on success
   */
-  int (*backup_start)(THD *thd, IF_WIN(const char*,int) target);
+  int (*backup_start)(THD *thd, backup_target target);
   /**
      Process a file that was collected in backup_start().
      @param thd   current session
@@ -1924,11 +1945,11 @@ struct handlerton : public transaction_participant
   /**
      Clean up after any backup_end().
      @param thd     the parameter on which backup_end() was invoked
-     @param target  target directory
+     @param target  backup target
      @return error code
      @retval 0 on success
   */
-  int (*backup_finalize)(THD *thd, IF_WIN(const char*,int) target);
+  int (*backup_finalize)(THD *thd, backup_target target);
 
   /**********************************************************************
    WSREP specific

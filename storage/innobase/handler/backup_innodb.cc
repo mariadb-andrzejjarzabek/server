@@ -16,6 +16,7 @@
 #include "my_global.h"
 #include "sql_class.h"
 #include "backup_innodb.h"
+#include "sql_backup_interface.h"
 #include "trx0trx.h"
 #include <vector>
 
@@ -23,151 +24,6 @@
 @param thd   session
 @return InnoDB transaction */
 trx_t *check_trx_exists(THD *thd) noexcept;
-
-#ifdef _WIN32
-#elif defined __APPLE__
-# include <sys/attr.h>
-# include <sys/clonefile.h>
-# include <copyfile.h>
-# define copy_file(src, dst, off) \
-  fcopyfile(src, dst, nullptr, COPYFILE_ALL | COPYFILE_CLONE)
-#else
-using copying_step= ssize_t(int,int,size_t,off_t*);
-template<copying_step step>
-static ssize_t copy(int in_fd, int out_fd, off_t c) noexcept
-{
-  ssize_t ret;
-  for (off_t offset{0};;)
-  {
-    off_t count= c;
-    if (count > INT_MAX >> 20 << 20)
-      count = INT_MAX >> 20 << 20;
-    ret= step(in_fd, out_fd, size_t(count), &offset);
-    if (ret < 0)
-      break;
-    c-= ret;
-    if (!c)
-      return 0;
-    if (!ret)
-      return -1;
-  }
-  return ret;
-}
-# if defined __linux__ || defined __FreeBSD__
-/* Copy between files in a single (type of) file system */
-static inline ssize_t
-copy_step(int in_fd, int out_fd, size_t count, off_t *offset) noexcept
-{
-  return copy_file_range(in_fd, offset, out_fd, nullptr, count, 0);
-}
-#  define cfr(src,dst,size) copy<copy_step>(src, dst, size)
-# endif
-# ifdef __linux__
-#  include <sys/sendfile.h>
-/* Copy a file to a stream or to a regular file. */
-static inline ssize_t
-send_step(int in_fd, int out_fd, size_t count, off_t *offset) noexcept
-{
-  return sendfile(out_fd, in_fd, offset, count);
-}
-# else
-#  include <sys/mman.h>
-/** Copy a file using a memory mapping.
-@param in_fd   source file
-@param out_fd  destination
-@param count   number of bytes to copy
-@return error code
-@retval 0  on success
-@retval 1  if a memory mapping failed */
-static ssize_t mmap_copy(int in_fd, int out_fd, off_t count)
-{
-#if SIZEOF_SIZE_T < 8
-  if (count != ssize_t(count))
-    return 1;
-#endif
-  void *p= mmap(nullptr, count, PROT_READ, MAP_SHARED, in_fd, 0);
-  if (p == MAP_FAILED)
-    return 1;
-  ssize_t ret;
-  size_t c= size_t(count);
-  for (const char *b= static_cast<const char*>(p);; b+= ret)
-  {
-    ret= write(out_fd, b, std::min(c, size_t(INT_MAX >> 20 << 20)));
-    if (ret < 0)
-      break;
-    c-= ret;
-    if (!c)
-    {
-      ret= 0;
-      break;
-    }
-    if (!ret)
-    {
-      ret= -1;
-      break;
-    }
-  }
-  munmap(p, count);
-  return ret;
-}
-
-static ssize_t pread_write(int in_fd, int out_fd, off_t count) noexcept
-{
-  constexpr size_t READ_WRITE_SIZE= 65536;
-  char *b= static_cast<char*>(aligned_malloc(READ_WRITE_SIZE, 4096));
-  if (!b)
-    return -1;
-  ssize_t ret;
-  for (off_t o= 0;; o+= ret)
-  {
-    ret= pread(in_fd, b, ssize_t(std::min(count, off_t{READ_WRITE_SIZE})), o);
-    if (ret > 0)
-      ret= write(out_fd, b, ret);
-    if (ret < 0)
-      break;
-    count-= ret;
-    if (!count)
-    {
-      ret= 0;
-      break;
-    }
-    if (!ret)
-    {
-      ret= -1;
-      break;
-    }
-  }
-  aligned_free(b);
-  return ret;
-}
-# endif
-
-/** Copy a file.
-@param src  source file descriptor
-@param dst  target to append src to
-@param size amount of data to be copied
-@return error code (negative)
-@retval 0   on success */
-static int copy_file(int src, int dst, off_t size) noexcept
-{
-  ssize_t ret;
-# ifdef cfr
-  if (!(ret= cfr(src, dst, size)))
-    return int(ret);
-#  ifdef __linux__
-  if (errno == EOPNOTSUPP)
-#  endif
-# endif
-# ifdef __linux__ // starting with Linux 2.6.33, we can rely on sendfile(2)
-    ret= copy<send_step>(src, dst, size);
-# else
-  if ((ret= mmap_copy(src, dst, size)) == 1)
-    ret= pread_write(src, dst, size);
-# endif
-  ut_ad(ret <= 0);
-  return int(ret);
-}
-#endif
 
 namespace
 {
@@ -186,8 +42,8 @@ class InnoDB_backup
   hard-linked, copied, or moved */
   std::vector<lsn_t> logs;
 
-  /** target directory name or handle */
-  IF_WIN(const char*,int) target;
+  /** backup target */
+  backup_target target;
 
   /** the checkpoint from which the backup starts */
   lsn_t checkpoint;
@@ -197,11 +53,11 @@ public:
   /**
      Start of BACKUP SERVER: collect all files to be backed up
      @param thd     current session
-     @param target  target directory
+     @param target  backup target
      @return error code
      @retval 0 on success
   */
-  int init(THD *thd, IF_WIN(const char*,int) target) noexcept
+  int init(THD *thd, backup_target target) noexcept
   {
     trx_t *trx= check_trx_exists(thd);
     if (trx->id || trx->state != TRX_STATE_NOT_STARTED)
@@ -401,11 +257,11 @@ public:
   /**
      Clean up after end().
      @param thd     the parameter that had been passed to end()
-     @param target  target directory
+     @param target  backup target
      @return error code
      @retval 0 on success
   */
-  int fini(THD *thd, IF_WIN(const char*,int) target) noexcept
+  int fini(THD *thd, backup_target target) noexcept
   {
     int fail= 0;
     log_sys.latch.wr_lock();
@@ -429,15 +285,15 @@ public:
         trx->start_time_micro= 0;
         /* Copy our clone of the last log until the final LSN */
 #ifdef _WIN32
-        std::string src{target};
+        std::string src{target.path};
         src.push_back('/');
         std::string dst{src};
         src.append("ib_logfile101");
         log_sys.append_archive_name(dst, first_lsn);
         const char *s= src.c_str(), *d= dst.c_str();
-
-        if (!CopyFileExA(s, d, nullptr, nullptr, nullptr,
-                         COPY_FILE_NO_BUFFERING) ||
+        if (!CopyFileEx(s, d, nullptr, nullptr, nullptr,
+                        COPY_FILE_NO_BUFFERING) ||
+            !SetFileAttributes(s, FILE_ATTRIBUTE_NORMAL) ||
             !MoveFileEx(d, s, MOVEFILE_REPLACE_EXISTING))
         {
           my_osmaperr(GetLastError());
@@ -445,7 +301,8 @@ public:
           fail= 1;
         }
 #else
-        int s= openat(target, "ib_logfile101", O_RDONLY);
+        ut_ad(target.directory);
+        int s= openat(target.fd, "ib_logfile101", O_RDONLY);
         std::string dst;
         log_sys.append_archive_name(dst, first_lsn);
         int d{-1};
@@ -457,14 +314,15 @@ public:
           goto done;
         }
 # ifdef __APPLE__
-        fail= fclonefileat(s, target, dst.c_str(), 0);
+        fail= fclonefileat(s, target.fd, dst.c_str(), 0);
         if (!fail)
           goto close;
         if (errno != ENOTSUP)
           goto fail;
 # endif
-        d= openat(target, dst.c_str(), O_CREAT | O_EXCL | O_TRUNC | O_WRONLY,
-                  0666);
+        ut_ad(target.directory);
+        d= openat(target.fd, dst.c_str(),
+                  O_CREAT | O_EXCL | O_TRUNC | O_WRONLY, 0666);
         if (d < 0)
         {
         fail:
@@ -478,7 +336,7 @@ public:
                           ((trx->commit_lsn - first_lsn) + 4095) & ~4095ULL);
           if (close(d) || fail)
             goto fail;
-          if (unlinkat(target, "ib_logfile101", 0))
+          if (unlinkat(target.fd, "ib_logfile101", 0))
           {
             my_error(ER_CANT_DELETE_FILE, MYF(ME_ERROR_LOG),
                      "ib_logfile101", errno);
@@ -536,12 +394,12 @@ private:
     for (bool tried_mkdir{false};;)
     {
 #ifdef _WIN32
-      backup_start(node->space);
-      std::string path{target};
+      std::string path{target.path};
       path.push_back('/');
+      backup_start(node->space);
       path.append(node->name);
-      bool ok= CopyFileExA(node->name, path.c_str(), nullptr, nullptr, nullptr,
-                           COPY_FILE_NO_BUFFERING);
+      bool ok= CopyFileEx(node->name, path.c_str(), nullptr, nullptr, nullptr,
+                          COPY_FILE_NO_BUFFERING);
       backup_stop(node->space);
       if (!ok)
       {
@@ -550,12 +408,7 @@ private:
             node->space->id && !srv_is_undo_tablespace(node->space->id))
         {
           tried_mkdir= true;
-          path= target;
-          const char *sep= strchr(node->name, '/');
-          ut_ad(sep);
-          sep= strchr(sep + 1, '/');
-          ut_ad(sep);
-          path.append(node->name, size_t(sep - node->name));
+          path.erase(path.rfind('/'));
           if (CreateDirectory(path.c_str(),
                               my_dir_security_attributes.lpSecurityDescriptor
                               ? &my_dir_security_attributes : nullptr) ||
@@ -569,9 +422,10 @@ private:
       break;
 #else
       int f;
+      ut_ad(target.directory);
 # ifdef __APPLE__
       backup_start(node->space);
-      f= fclonefileat(node->handle, target, node->name, 0);
+      f= fclonefileat(node->handle, target.fd, node->name, 0);
       backup_stop(node->space);
       if (!f)
         break;
@@ -584,7 +438,7 @@ private:
         goto fail;
       }
 # endif
-      f= openat(target, node->name,
+      f= openat(target.fd, node->name,
                 O_CREAT | O_EXCL | O_TRUNC | O_WRONLY, 0666);
       if (f < 0)
       {
@@ -602,7 +456,7 @@ private:
             sep= strchr(sep + 1, '/');
             ut_ad(sep);
             std::string dir{node->name, size_t(sep - node->name)};
-            if (!mkdirat(target, dir.c_str(), 0777) || errno == EEXIST)
+            if (!mkdirat(target.fd, dir.c_str(), 0777) || errno == EEXIST)
               continue;
           }
         }
@@ -645,14 +499,8 @@ private:
 
 #ifdef _WIN32
     const bool closed{clone && log_sys.close_file_if_at(lsn)};
-    std::string b{target};
-    if (clone)
-      b.append("/ib_logfile101");
-    else
-    {
-      b.push_back('/');
-      b.append(basename);
-    }
+    std::string b= target.path;
+    b.append(clone ? "ib_logfile101" : basename);
     const char *destname= b.c_str();
 
     unsigned long err;
@@ -675,13 +523,13 @@ private:
       if ((err= GetLastError()) != ERROR_NOT_SAME_DEVICE)
         goto got_err;
       /* Hard-linking failed. Try copying with the final name. */
-      b.assign(target);
+      b= target.path;
       b.push_back('/');
       b.append(basename);
       destname= b.c_str();
 
-      if (!CopyFileExA(path, destname, nullptr, nullptr, nullptr,
-                       COPY_FILE_NO_BUFFERING))
+      if (!CopyFileEx(path, destname, nullptr, nullptr, nullptr,
+                      COPY_FILE_NO_BUFFERING))
         goto fail;
     }
     else if (clone)
@@ -689,10 +537,11 @@ private:
     if (closed)
       log_sys.resume_file();
 #else
+    ut_ad(target.directory);
     if (move
-        ? !renameat(AT_FDCWD, path, target, basename)
-        : !linkat(AT_FDCWD, path, target, clone ? "ib_logfile101" : basename,
-                  AT_SYMLINK_FOLLOW))
+        ? !renameat(AT_FDCWD, path, target.fd, basename)
+        : !linkat(AT_FDCWD, path, target.fd,
+                  clone ? "ib_logfile101" : basename, AT_SYMLINK_FOLLOW))
     {
       if (clone)
         *clone= !move;
@@ -715,7 +564,7 @@ private:
         std::ignore= close(src);
         goto fail;
       }
-      int dst= openat(target, basename,
+      int dst= openat(target.fd, basename,
                       O_CREAT | O_EXCL | O_TRUNC | O_WRONLY, 0666);
       if (dst < 0)
         goto close_and_fail;
@@ -775,7 +624,7 @@ void log_t::backup_stop(uint64_t old_size, THD *thd) noexcept
     resize_finish(thd);
 }
 
-int innodb_backup_start(THD *thd, IF_WIN(const char*,int) target) noexcept
+int innodb_backup_start(THD *thd, backup_target target) noexcept
 {
   return backup.init(thd, target);
 }
@@ -790,7 +639,7 @@ int innodb_backup_end(THD *thd, bool abort) noexcept
   return backup.end(thd, abort);
 }
 
-int innodb_backup_finalize(THD *thd, IF_WIN(const char*,int) target) noexcept
+int innodb_backup_finalize(THD *thd, backup_target target) noexcept
 {
   return backup.fini(thd, target);
 }

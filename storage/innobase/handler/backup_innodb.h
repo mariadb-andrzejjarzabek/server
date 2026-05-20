@@ -16,11 +16,11 @@
 /**
    Start of BACKUP SERVER: collect all files to be backed up
    @param thd     current session
-   @param target  target directory
+   @param target  backup target
    @return error code
    @retval 0 on success
 */
-int innodb_backup_start(THD *thd, IF_WIN(const char*,int) target) noexcept;
+int innodb_backup_start(THD *thd, backup_target target) noexcept;
 
 /**
    Process a file that was collected in backup_start().
@@ -42,11 +42,11 @@ int innodb_backup_end(THD *thd, bool abort) noexcept;
 /**
    Clean up after innodb_backup_end().
    @param thd     the parameter on which innodb_backup_end() had been invoked
-   @param target  target directory
+   @param target  backup target
    @return error code
    @retval 0 on success
 */
-int innodb_backup_finalize(THD *thd, IF_WIN(const char*,int) target) noexcept;
+int innodb_backup_finalize(THD *thd, backup_target target) noexcept;
 
 /**
    Complete the first checkpoint in a new archive log file.
