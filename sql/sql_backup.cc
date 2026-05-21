@@ -135,6 +135,16 @@ static ssize_t pread_write(int in_fd, int out_fd, off_t count) noexcept
 }
 # endif
 
+/** Copy a file (whole content).
+@param src  source file descriptor
+@param dst  target to append src to
+@return error code (negative)
+@retval 0   on success */
+extern "C" int copy_entire_file(int src, int dst)
+{
+  return copy_file(src, dst, lseek(src, 0, SEEK_END));
+}
+
 /** Copy a file.
 @param src  source file descriptor
 @param dst  target to append src to
@@ -192,7 +202,7 @@ static my_bool backup_step(THD *thd, plugin_ref plugin, void *) noexcept
 static my_bool backup_finalize(THD *thd, plugin_ref plugin, void *dst) noexcept
 {
   handlerton *hton= plugin_hton(plugin);
-  if (hton->backup_step)
+  if (hton->backup_finalize)
     return hton->backup_finalize(thd, *static_cast<backup_target*>(dst));
   return 0;
 }
@@ -250,8 +260,10 @@ bool Sql_cmd_backup::execute(THD *thd)
                                    MYSQL_STORAGE_ENGINE_PLUGIN,
                                    PLUGIN_IS_DELETED|PLUGIN_IS_READY, nullptr);
 
-  /* FIXME: Escalate to MDL_BACKUP_BLOCK_DDL or similar */
   fail=
+    thd->mdl_context.upgrade_shared_lock(mdl_request.ticket,
+                                         MDL_BACKUP_WAIT_COMMIT,
+                                         thd->variables.lock_wait_timeout) ||
     plugin_foreach_with_mask(thd, backup_end, MYSQL_STORAGE_ENGINE_PLUGIN,
                              PLUGIN_IS_DELETED|PLUGIN_IS_READY,
                              reinterpret_cast<void*>(fail)) || fail;

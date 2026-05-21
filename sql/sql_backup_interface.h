@@ -21,6 +21,7 @@
 # include <copyfile.h>
 # define copy_file(src, dst, off) \
   fcopyfile(src, dst, nullptr, COPYFILE_ALL | COPYFILE_CLONE)
+# define copy_entire_file(src, dst) copy_file(src, dst,)
 #else
 # ifdef __cplusplus
 extern "C"
@@ -32,4 +33,15 @@ extern "C"
 @return error code (negative)
 @retval 0   on success */
 int copy_file(int src, int dst, off_t size);
+
+# ifdef __cplusplus
+extern "C"
+# endif
+/** Copy an entire file.
+@param src  source file descriptor
+@param dst  target to append src to
+@param size amount of data to be copied
+@return error code (negative)
+@retval 0   on success */
+int copy_entire_file(int src, int dst);
 #endif

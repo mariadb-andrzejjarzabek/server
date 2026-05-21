@@ -567,7 +567,7 @@ private:
                       O_CREAT | O_EXCL | O_TRUNC | O_WRONLY, 0666);
       if (dst < 0)
         goto close_and_fail;
-      int err= copy_file(src, dst, lseek(src, 0, SEEK_END));
+      int err= copy_entire_file(src, dst);
       if ((close(dst) | close(src)) || err)
         goto fail;
     }
