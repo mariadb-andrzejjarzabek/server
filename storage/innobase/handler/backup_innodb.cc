@@ -577,7 +577,7 @@ private:
 };
 
 /** The backup context; protected by log_sys.latch */
-static InnoDB_backup backup;
+static InnoDB_backup innodb_backup;
 }
 
 bool log_t::backup_start(uint64_t *old_size, THD *thd) noexcept
@@ -625,25 +625,25 @@ void log_t::backup_stop(uint64_t old_size, THD *thd) noexcept
 
 int innodb_backup_start(THD *thd, backup_target target) noexcept
 {
-  return backup.init(thd, target);
+  return innodb_backup.init(thd, target);
 }
 
 int innodb_backup_step(THD *thd) noexcept
 {
-  return backup.step(thd);
+  return innodb_backup.step(thd);
 }
 
 int innodb_backup_end(THD *thd, bool abort) noexcept
 {
-  return backup.end(thd, abort);
+  return innodb_backup.end(thd, abort);
 }
 
 int innodb_backup_finalize(THD *thd, backup_target target) noexcept
 {
-  return backup.fini(thd, target);
+  return innodb_backup.fini(thd, target);
 }
 
 void innodb_backup_checkpoint() noexcept
 {
-  backup.checkpoint_complete();
+  innodb_backup.checkpoint_complete();
 }
