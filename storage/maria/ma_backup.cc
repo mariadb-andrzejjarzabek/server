@@ -124,8 +124,8 @@ namespace
 #ifndef _WIN32
     const int datadir_fd;
 #endif
-    static const std::vector<std::string> data_exts;
-    static const std::string log_file_prefix;
+    static const LEX_CSTRING data_exts[];
+    static const LEX_CSTRING log_file_prefix;
     using dir_name = std::string;
     using dir_contents = std::vector<std::string>;
     using database_dir = std::pair<dir_name, dir_contents>;
@@ -258,25 +258,30 @@ namespace
 
     int copy_file(const std::string &path) const noexcept
     {
+      return copy_file(path.c_str());
+    }
+
+    int copy_file(const char*path) const noexcept
+    {
 #ifndef _WIN32
       int ret_val = 0;
-      int src_fd = openat(datadir_fd, path.c_str(), O_RDONLY);
+      int src_fd = openat(datadir_fd, path, O_RDONLY);
       if (src_fd < 0)
       {
-        my_error(ER_CANT_OPEN_FILE, MYF(0), path.c_str(), errno);
+        my_error(ER_CANT_OPEN_FILE, MYF(0), path, errno);
         return 1;
       }
-      int tgt_fd = openat(target.fd, path.c_str(),
+      int tgt_fd = openat(target.fd, path,
                           O_CREAT | O_EXCL | O_WRONLY, 0777);
       if (tgt_fd < 0)
       {
-        my_error(ER_CANT_CREATE_FILE, MYF(0), path.c_str(), errno);
+        my_error(ER_CANT_CREATE_FILE, MYF(0), path, errno);
         ret_val = 1;
         goto finish;
       }
       if (copy_entire_file(src_fd, tgt_fd) != 0)
       {
-        my_error(ER_ERROR_ON_WRITE, MYF(0), path.c_str(), errno);
+        my_error(ER_ERROR_ON_WRITE, MYF(0), path, errno);
         ret_val = 1;
       }
       close(tgt_fd);
@@ -298,31 +303,22 @@ namespace
     }
 
 
-    static bool is_db_file(const char* file_name) noexcept
-    {
-      for (const std::string& ext : data_exts)
-      {
-        if (ends_with(file_name, ext))
-          return true;
-      }
-      /* As a stop-gap db/opt files are also copied here, this should be done in SQL layer. */
-      return !strcmp(file_name, "db.opt");
-    }
+    static bool is_db_file(const char* file_name) noexcept;
 
-    static bool ends_with(const char* str, const std::string& suffix) noexcept
+    static bool ends_with(const char* str, const LEX_CSTRING& suffix) noexcept
     {
       size_t str_len = strlen(str);
-      size_t suffix_len = suffix.size();
+      size_t suffix_len = suffix.length;
       if (str_len < suffix_len)
         return false;
       return memcmp(str + str_len - suffix_len, 
-                    suffix.data(),
+                    suffix.str,
                     suffix_len) == 0;
     }
 
-    static bool begins_with(const char* str, const std::string& prefix) noexcept
+    static bool begins_with(const char* str, const LEX_CSTRING& prefix) noexcept
     {
-      return strncmp(str, prefix.data(), prefix.size()) == 0;
+      return strncmp(str, prefix.str, prefix.length) == 0;
     }
 
 #ifdef _WIN32
@@ -336,9 +332,23 @@ namespace
 
   /* TODO: .frm failes are not Aria-specific, .MYD and .MYI are MyISAM files;
    they are copied here as a stop-gap */
-  const std::vector<std::string>
-    Aria_backup::data_exts {".MAD"s, ".MAI"s, "MYD"s, "MYI"s, "frm"s};
-  const std::string Aria_backup::log_file_prefix {"aria_log."};
+  const LEX_CSTRING Aria_backup::data_exts[] {{C_STRING_WITH_LEN(".MAD")},
+                                              {C_STRING_WITH_LEN(".MAI")},
+                                              {C_STRING_WITH_LEN(".MYD")},
+                                              {C_STRING_WITH_LEN(".MYI")},
+                                              {C_STRING_WITH_LEN(".frm")}};
+  const LEX_CSTRING Aria_backup::log_file_prefix {C_STRING_WITH_LEN("aria_log.")};
+
+  bool Aria_backup::is_db_file(const char* file_name) noexcept
+  {
+    for (const LEX_CSTRING& ext : data_exts)
+    {
+      if (ends_with(file_name, ext))
+        return true;
+    }
+    /* As a stop-gap db/opt files are also copied here, this should be done in SQL layer. */
+    return !strcmp(file_name, "db.opt");
+  }
 
   std::unique_ptr<Aria_backup> aria_backup;
 }

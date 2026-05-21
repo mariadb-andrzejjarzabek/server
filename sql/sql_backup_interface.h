@@ -13,11 +13,34 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335  USA */
 
-#ifndef _WIN32
-/* On Windows you have to use CopyFileEx() and friends manually */
-# ifdef __cplusplus
+#ifdef __APPLE__
+# include <sys/attr.h>
+# include <sys/clonefile.h>
+# include <copyfile.h>
+#endif
+
+#ifdef __cplusplus
 extern "C"
-# endif
+{
+#endif
+
+#ifdef _WIN32
+/* You have to use CopyFileEx() and friends manually */
+#elif defined __APPLE__
+
+inline
+int copy_entire_file(int src, int dst)
+{
+  return fcopyfile(src, dst, nullptr, COPYFILE_ALL | COPYFILE_CLONE);
+}
+
+inline
+int copy_file(int src, int dst, off_t)
+{
+  return fcopyfile(src, dst, nullptr, COPYFILE_ALL | COPYFILE_CLONE);
+}
+
+#else
 /** Copy a file.
 @param src  source file descriptor
 @param dst  target to append src to
@@ -26,13 +49,15 @@ extern "C"
 @retval 0   on success */
 int copy_file(int src, int dst, off_t size);
 
-# ifdef __cplusplus
-extern "C"
-# endif
+
 /** Copy an entire file.
 @param src  source file descriptor
 @param dst  target to append src to
 @return error code (negative)
 @retval 0   on success */
 int copy_entire_file(int src, int dst);
+#endif
+
+#ifdef __cplusplus
+}
 #endif

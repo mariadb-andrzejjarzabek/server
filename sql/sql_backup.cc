@@ -21,23 +21,7 @@
 #include "sql_backup_interface.h"
 #include "sql_parse.h"
 
-#ifdef _WIN32
-#elif defined __APPLE__
-# include <sys/attr.h>
-# include <sys/clonefile.h>
-# include <copyfile.h>
-
-int copy_entire_file(int src, int dst)
-{
-  return fcopyfile(src, dst, nullptr, COPYFILE_ALL | COPYFILE_CLONE);
-}
-
-extern "C" int copy_file(int src, int dst, off_t)
-{
-  return fcopyfile(src, dst, nullptr, COPYFILE_ALL | COPYFILE_CLONE);
-}
-
-#else
+#if !defined __APPLE__ && !defined _WIN32
 using copying_step= ssize_t(int,int,size_t,off_t*);
 template<copying_step step>
 static ssize_t copy(int in_fd, int out_fd, off_t c) noexcept
