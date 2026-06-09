@@ -233,11 +233,14 @@ namespace
     static constexpr const char zerobuf[511]{};
     /* All file suffixes are 4 characters long (dot and 3 letter extension) */
     static constexpr size_t suffix_len= 4;
-    static const char* data_ext;
-    static const char* index_ext;
-    static const LEX_CSTRING log_file_prefix;
-    static const LEX_CSTRING tmp_prefix;
-    static const char* control_file_name;
+    static constexpr const char* data_ext {MARIA_NAME_DEXT};
+    static constexpr const char* index_ext {MARIA_NAME_IEXT};
+    static constexpr LEX_CSTRING log_file_prefix {C_STRING_WITH_LEN("aria_log.")};
+    static constexpr LEX_CSTRING tmp_prefix {C_STRING_WITH_LEN(tmp_file_prefix)};
+    /* TODO: .frm failes are not Aria-specific, .MYD and .MYI are MyISAM files;
+    they are copied here as a stop-gap */
+    static constexpr const char* misc_exts[] {".MYD", ".MYI", ".frm"};
+    static constexpr const char* control_file_name {"aria_log_control"};
     using dir_name = std::string;
     using dir_contents = std::vector<std::string>;
     using database_dir = std::pair<dir_name, dir_contents>;
@@ -300,7 +303,8 @@ namespace
 
     int scan_database_dir(const char* dir_name) noexcept
     {
-      const std::string dir_path{make_path(mysql_real_data_home, dir_name)};
+      const char* base_dir = maria_data_root;
+      const std::string dir_path= build_path(base_dir, dir_name);
       MY_DIR *dir_info= my_dir(dir_path.c_str(), MYF(MY_WANT_STAT));
       if (!dir_info)
         return dir_error(dir_path.c_str());
@@ -340,7 +344,7 @@ namespace
           {
             if(misc_dirs.empty() || misc_dirs.back() != dir_name)
               misc_dirs.emplace_back(dir_name);
-            misc_files.push_back(std::string(dir_name) + "/" + filename);
+            misc_files.push_back(build_path(dir_name, filename));
           }
         }
       }
@@ -423,12 +427,16 @@ namespace
       noexcept
     {
 #ifdef _WIN32
-      if (CreateDirectory(make_path(target.path, name).c_str(), nullptr))
-        return 0;
-      DWORD err= GetLastError();
-      if (err == ERROR_ALREADY_EXISTS)
-        return 0;
-      my_osmaperr(err);
+      const std::string dir_path= build_path(target.path, name);
+      if (!CreateDirectory(dir_path.c_str(), nullptr))
+      {
+        DWORD err = GetLastError();
+        if (err != ERROR_ALREADY_EXISTS)
+        {
+          my_osmaperr(err);
+          return 1;
+        }
+      }
 #else
       if (likely(!mkdirat(target.fd, name, 0777) || errno == EEXIST))
         return 0;
@@ -483,11 +491,8 @@ end:
       std::string index_path;
       index_path.reserve(dir_name.size() + table_name.size() + 5);
       index_path= dir_name;
-      index_path += "/";
-      size_t dir_part_length = index_path.size();
-      index_path.resize(index_path.size() + table_name.size());
-      std::copy(table_name.begin(), table_name.end(),
-                index_path.begin() + dir_part_length);
+      index_path += '/';
+      index_path.append(table_name.begin(), table_name.end());
       std::string data_path;
       data_path.reserve(dir_name.size() + table_name.size() + 5);
       data_path= index_path;
@@ -557,14 +562,13 @@ end:
       close(src_fd);
       return ret_val;
 #else
-      const std::string src_path
-        {make_path(is_log ? maria_data_root : mysql_real_data_home, path)};
+      const std::string src_path= build_path(is_log ? maria_data_root : mysql_real_data_home, path);
 
       if (sink.stream == sink.NO_STREAM)
       {
-        std::string dest_path{make_path(target.path, path)};
-        if (!CopyFileEx(src_path.c_str(), dest_path.c_str(),
-                        nullptr, nullptr, nullptr, COPY_FILE_NO_BUFFERING))
+        const std::string dest_path= build_path(target.path, path);
+        if (!CopyFileEx(src_path.c_str(), dest_path.c_str(), nullptr, nullptr, nullptr,
+                        COPY_FILE_NO_BUFFERING))
         {
           my_osmaperr(GetLastError());
           my_error(ER_CANT_CREATE_FILE, MYF(0), dest_path.c_str(), errno);
@@ -667,22 +671,18 @@ end:
       return strncmp(str, prefix.str, prefix.length) == 0;
     }
 
-    /** @return the target directory path */
-    static std::string make_path(const char *dir, const char *name)
+    static std::string build_path(const char *base_path, const char *filename) noexcept
     {
-      std::string path{dir};
-      path.push_back('/');
-      path.append(name);
+      std::string path;
+      const size_t base_len= strlen(base_path);
+      const size_t filename_len= strlen(filename);
+      path.reserve(base_len + filename_len + 1);
+      path.append(base_path, base_len);
+      path+= '/';
+      path.append(filename, filename_len);
       return path;
     }
   };
-
-
-  const LEX_CSTRING Aria_backup::log_file_prefix {C_STRING_WITH_LEN("aria_log.")};
-  const LEX_CSTRING Aria_backup::tmp_prefix {C_STRING_WITH_LEN(tmp_file_prefix)};
-  const char* Aria_backup::data_ext (MARIA_NAME_DEXT);
-  const char* Aria_backup::index_ext (MARIA_NAME_IEXT);
-  const char* Aria_backup::control_file_name {"aria_log_control"};
 }
 
 void *aria_backup_start(THD *thd, const backup_target *target,
@@ -712,6 +712,7 @@ void *aria_backup_start(THD *thd, const backup_target *target,
   {
 #if 1 // FIXME: invoke these only for Aria, MyISAM, CSV but not others
   case BACKUP_PHASE_NO_DML_NON_TRANS:
+    /* FIXME: Would be better to selectively purge only the tables we need. */
     tc_purge();
     tdc_purge(true);
     break;
