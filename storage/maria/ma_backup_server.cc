@@ -75,18 +75,18 @@ namespace
         if (idx < list.size())
         {
           if (copy_action(list[idx]) != 0)
-            return 1;
+            return true;
           m_copy_done= true;
-          m_remaining+= list.size() - idx - 1U;
+          m_remaining+= static_cast<int>(list.size() - idx - 1U);
         }
       }
       else
       {
         size_t current_copied= copied.load(std::memory_order_relaxed);
         if (current_copied < list.size())
-          m_remaining+= list.size() - current_copied;
+          m_remaining+= static_cast<int>(list.size() - current_copied);
       }
-      return 0;
+      return false;
     }
   };
 
@@ -679,7 +679,7 @@ end:
 
 
   const LEX_CSTRING Aria_backup::log_file_prefix {C_STRING_WITH_LEN("aria_log.")};
-  const LEX_CSTRING Aria_backup::tmp_prefix {C_STRING_WITH_LEN("#sql")};
+  const LEX_CSTRING Aria_backup::tmp_prefix {C_STRING_WITH_LEN(tmp_file_prefix)};
   const char* Aria_backup::data_ext (MARIA_NAME_DEXT);
   const char* Aria_backup::index_ext (MARIA_NAME_IEXT);
   const char* Aria_backup::control_file_name {"aria_log_control"};
@@ -710,6 +710,12 @@ void *aria_backup_start(THD *thd, const backup_target *target,
   assert(aria_backup);
   switch(phase)
   {
+#if 1 // FIXME: invoke these only for Aria, MyISAM, CSV but not others
+  case BACKUP_PHASE_NO_DML_NON_TRANS:
+    tc_purge();
+    tdc_purge(true);
+    break;
+#endif
   case BACKUP_PHASE_NO_DDL:
 #if 1 // FIXME: invoke these only for Aria, MyISAM, CSV but not others
     tc_purge();
