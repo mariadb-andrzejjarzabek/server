@@ -479,7 +479,11 @@ namespace
       aria_free_capabilities(&cap);
 end:
       mysql_mutex_unlock(&THR_LOCK_maria);
+#ifndef _WIN32
       close(fd);
+#else
+      my_close(fd, MYF(0));
+#endif
       return result;
     }
 
