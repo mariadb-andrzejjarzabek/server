@@ -30,6 +30,7 @@
 #include "span.h"
 #include <algorithm>
 #include <functional>
+#include <optional>
 #include <variant>
 
 /*
