@@ -99,8 +99,6 @@ namespace
     ~Aria_backup()
     {
 #ifndef _WIN32
-      if (datadir_fd >= 0)
-        std::ignore= close(datadir_fd);
       if (logdir_fd >= 0)
         std::ignore= close(logdir_fd);
 #endif
@@ -112,15 +110,9 @@ namespace
     {
 #ifndef _WIN32
       /* Aria table files live under the server data directory
-      (mysql_real_data_home), while the transaction logs and control file
+      (current directory), while the transaction logs and control file
       live under aria_log_dir_path (maria_data_root). These differ when
       aria_log_dir_path is set, so open and scan them separately. */
-      datadir_fd= open(mysql_real_data_home, O_DIRECTORY);
-      if (datadir_fd < 0)
-      {
-        my_error(ER_CANT_READ_DIR, MYF(0), mysql_real_data_home, errno);
-        return true;
-      }
       logdir_fd= open(maria_data_root, O_DIRECTORY);
       if (logdir_fd < 0)
       {
@@ -134,13 +126,13 @@ namespace
       return false;
     }
 
-    bool start_copy_dml_safe(const backup_target &target, const backup_sink &sink) noexcept
+    bool start_copy_dml_safe(const backup_target *target, const backup_sink *sink) noexcept
     {
       assert(translog_purge_disabled);
       if (scan_dbdirs())
         return true;
       flatten_table_lists();
-      if (sink.stream == sink.NO_STREAM)
+      if (sink->stream == sink->NO_STREAM)
         return ensure_target_dirs(target);
       return false;
     }
@@ -154,7 +146,7 @@ namespace
 
     /* Copy an Aria table that is safe to be copied while concurrent DML
     is in progress. */
-    int dml_safe_copy_step(const backup_target &target, const backup_sink &sink) noexcept
+    int dml_safe_copy_step(const backup_target *target, const backup_sink *sink) noexcept
     {
       Copy_from_list copy_from_list;
       auto copy_table_action= [this, target, sink](const table_ref &table) noexcept
@@ -166,12 +158,6 @@ namespace
         return -1;
       if (copy_from_list(unsafe_tables_list, unsafe_tables_copied,
                          copy_table_action) != 0)
-        return -1;
-      if (copy_from_list(misc_files, misc_files_copied,
-                         [this, target, sink](const std::string &path) noexcept
-                         {
-                           return copy_file(target, sink, path, false);
-                         }) != 0)
         return -1;
       return copy_from_list.remaining();
     }
@@ -185,7 +171,7 @@ namespace
      - Aria tables
      - other ("miscellaneous") files
     */
-    int unsafe_copy_step(const backup_target &target, const backup_sink &sink) noexcept
+    int unsafe_copy_step(const backup_target *target, const backup_sink *sink) noexcept
     {
       bool copy_done= false;
 
@@ -208,7 +194,7 @@ namespace
       if (copy_from_list(log_files, log_files_copied,
                          [this, target, sink](const std::string &path) noexcept
                          {
-                           return copy_file(target, sink, path, false);
+                           return copy_log_file(target, sink, path.c_str());
                          }) != 0)
         return -1;
 
@@ -224,24 +210,19 @@ namespace
     }
   private:
 #ifndef _WIN32
-    /** The server data directory (Aria table files) */
-    int datadir_fd{-1};
-    /** The Aria log directory aria_log_dir_path (logs, control file) */
+    /** The server data directory */
     int logdir_fd{-1};
 #endif
     /** whether the Aria translog_disable_purge() is in effect */
     bool translog_purge_disabled{false};
-    static constexpr const char zerobuf[511]{};
-    /* All file suffixes are 4 characters long (dot and 3 letter extension) */
-    static constexpr size_t suffix_len= 4;
+
+    /* File extensions are 4 characters long (dot and 3 letter extension) */
+    static constexpr size_t ext_len= 4;
     static constexpr const char* data_ext {MARIA_NAME_DEXT};
     static constexpr const char* index_ext {MARIA_NAME_IEXT};
     static constexpr LEX_CSTRING log_file_prefix {C_STRING_WITH_LEN("aria_log.")};
     static constexpr LEX_CSTRING tmp_prefix {C_STRING_WITH_LEN(tmp_file_prefix)};
-    /* TODO: .frm failes are not Aria-specific, .MYD and .MYI are MyISAM files;
-    they are copied here as a stop-gap */
-    static constexpr const char* misc_exts[] {".MYD", ".MYI", ".frm"};
-    static constexpr const char* control_file_name {"aria_log_control"};
+    static constexpr LEX_CSTRING control_file_name {C_STRING_WITH_LEN("aria_log_control")};
     using dir_name = std::string;
     using dir_contents = std::vector<std::string>;
     using database_dir = std::pair<dir_name, dir_contents>;
@@ -252,9 +233,6 @@ namespace
     database_dirs unsafe_tables;
     /* Aria log files */
     std::vector<std::string> log_files;
-    std::vector<std::string> misc_files;
-    /* directories in which misc files are */
-    std::vector<std::string> misc_dirs;
 
     bool have_control_file = false;
     bool safe_files_copied = false;
@@ -271,7 +249,6 @@ namespace
     std::atomic<size_t> dml_safe_tables_copied {0};
     std::atomic<size_t> unsafe_tables_copied {0};
     std::atomic<size_t> log_files_copied {0};
-    std::atomic<size_t> misc_files_copied {0};
     std::atomic<bool> control_file_copied {false};
 
     ATTRIBUTE_COLD ATTRIBUTE_NOINLINE
@@ -283,10 +260,9 @@ namespace
 
     int scan_dbdirs() noexcept
     {
-      /* Scan the server data directory for Aria table files. */
-      MY_DIR *data_dir= my_dir(mysql_real_data_home, MYF(MY_WANT_STAT));
+      MY_DIR *data_dir= my_dir(".", MYF(MY_WANT_STAT));
       if (!data_dir)
-        return dir_error(mysql_real_data_home);
+        return dir_error(".");
       int fail= 0;
       for (const fileinfo &fi :
              st_::span<const fileinfo>{data_dir->dir_entry,
@@ -304,11 +280,9 @@ namespace
 
     int scan_database_dir(const char* dir_name) noexcept
     {
-      const char* base_dir = maria_data_root;
-      const std::string dir_path= build_path(base_dir, dir_name);
-      MY_DIR *dir_info= my_dir(dir_path.c_str(), MYF(MY_WANT_STAT));
+      MY_DIR *dir_info= my_dir(dir_name, MYF(MY_WANT_STAT));
       if (!dir_info)
-        return dir_error(dir_path.c_str());
+        return dir_error(dir_name);
       int fail= 0;
       dir_contents safe;
       dir_contents unsafe;
@@ -316,19 +290,20 @@ namespace
              st_::span<const fileinfo>{dir_info->dir_entry,
                                        dir_info->number_of_files})
       {
-        const char* filename= fi.name;
-        size_t filename_len = strlen(filename);
-        if (filename_len >= suffix_len)
+        const LEX_CSTRING filename {fi.name, strlen(fi.name)};
+        if (filename.length >= ext_len)
         {
-          const char* suffix = filename + filename_len - suffix_len;
-          if(match_suffix(suffix, index_ext))
+          /* Length of filename without extension. */
+          size_t base_filename_len= filename.length - ext_len;
+          const char* suffix = filename.str + base_filename_len;
+          if(match_ext(suffix, index_ext))
           {
             if (!is_tmp_table(filename))
             {
-              auto is_safe = is_safe_table(dir_name, filename);
+              auto is_safe = is_safe_table(dir_name, filename.str);
               if (std::holds_alternative<bool>(is_safe))
               {
-                std::string table_name(filename, filename_len - suffix_len);
+                std::string table_name(filename.str, base_filename_len);
                 if (std::get<bool>(is_safe))
                   safe.push_back(std::move(table_name));
                 else
@@ -340,12 +315,6 @@ namespace
                 goto finish;
               }
             }
-          }
-          else if (match_misc_ext(suffix) || !strcmp(filename, "db.opt"))
-          {
-            if(misc_dirs.empty() || misc_dirs.back() != dir_name)
-              misc_dirs.emplace_back(dir_name);
-            misc_files.push_back(build_path(dir_name, filename));
           }
         }
       }
@@ -361,7 +330,7 @@ namespace
       return fail;
     }
 
-    static bool is_tmp_table(const char* filename) noexcept
+    static bool is_tmp_table(const LEX_CSTRING &filename) noexcept
     {
       return begins_with(filename, tmp_prefix);
     }
@@ -390,15 +359,18 @@ namespace
       for (const fileinfo &fi :
              st_::span<const fileinfo>{dir_info->dir_entry,
                                        dir_info->number_of_files})
-        if (begins_with(fi.name, log_file_prefix))
-          log_files.emplace_back(fi.name);
-        else if (strcmp(fi.name, "aria_log_control") == 0)
+      {
+        const LEX_CSTRING filename {fi.name, strlen(fi.name)};
+        if (begins_with(filename, log_file_prefix))
+          log_files.emplace_back(LEX_STRING_WITH_LEN(filename));
+        else if (is_control_file_name(filename))
           have_control_file = true;
+      }
       my_dirend(dir_info);
       return 0;
     }
 
-    bool ensure_target_dirs(const backup_target &target) noexcept
+    bool ensure_target_dirs(const backup_target *target) noexcept
     {
       using string = std::string;
       std::vector<const string*> dirs;
@@ -406,8 +378,6 @@ namespace
         dirs.push_back(&dir.first);
       for (const database_dir &dir : unsafe_tables)
         dirs.push_back(&dir.first);
-      for (const string &dir: misc_dirs)
-        dirs.push_back(&dir);
       std::sort(dirs.begin(), dirs.end(),
         [](const string *a, const string *b) { return *a < *b; });
       auto dirs_end = std::unique(dirs.begin(), dirs.end(),
@@ -424,47 +394,21 @@ namespace
        Create directory in the target directory if it does not exist.
        Return 0 on success, non-0 on failure. Set errno in case of failure
     */
-    int ensure_target_subdir(const backup_target &target, const char *name)
+    int ensure_target_subdir(const backup_target *target, const char *name)
       noexcept
     {
-#ifdef _WIN32
-      const std::string dir_path= build_path(target.path, name);
-      if (!CreateDirectory(dir_path.c_str(), nullptr))
-      {
-        DWORD err = GetLastError();
-        if (err != ERROR_ALREADY_EXISTS)
-        {
-          my_osmaperr(err);
-          return 1;
-        }
-      }
-#else
-      if (likely(!mkdirat(target.fd, name, 0777) || errno == EEXIST))
-        return 0;
-#endif
-      my_error(ER_CANT_CREATE_FILE, MYF(0), name, errno);
-      return 1;
+      return ::ensure_target_subdir(target, name);
     }
 
     /* Returns result or error code. */
     std::variant<bool, int> is_safe_table(const char* dir_name, const char* myi_file_name)
     {
       ARIA_TABLE_CAPABILITIES cap;
-#ifndef _WIN32
-      std::string path= std::string(dir_name) + "/" + myi_file_name;
-      File fd= openat(datadir_fd, path.c_str(), O_RDONLY);
-      if (fd < 0)
-      {
-        my_errno= errno;
-        my_error(ER_CANT_OPEN_FILE, MYF(0), path.c_str(), errno);
-      }
-#else
-      std::string path= std::string(maria_data_root) + "/" +
-        dir_name + "/" + myi_file_name;
+      std::string path= build_path(dir_name, myi_file_name);
       File fd= my_open(path.c_str(), O_RDONLY, MYF(MY_WME));
-#endif
       if (fd < 0)
       {
+        my_error(ER_CANT_OPEN_FILE, MYF(0), path.c_str(), my_errno);
         return my_errno;
       }
       std::variant<bool, int> result;
@@ -480,15 +424,11 @@ namespace
       aria_free_capabilities(&cap);
 end:
       mysql_mutex_unlock(&THR_LOCK_maria);
-#ifndef _WIN32
-      close(fd);
-#else
       my_close(fd, MYF(0));
-#endif
       return result;
     }
 
-    int copy_table(const backup_target &target, const backup_sink &sink,
+    int copy_table(const backup_target *target, const backup_sink *sink,
                    const table_ref& table) noexcept
     {
       dir_ref dir_name = table.first;
@@ -503,189 +443,70 @@ end:
       data_path= index_path;
       index_path+= index_ext;
       data_path+= data_ext;
-      return copy_file(target, sink, index_path, false) ||
-             copy_file(target, sink, data_path, false);
+
+      return copy_table_file(target, sink, index_path) ||
+             copy_table_file(target, sink, data_path);
     }
 
-    int copy_control_file(const backup_target &target, const backup_sink &sink)
-      noexcept
+    int copy_control_file(const backup_target *target, const backup_sink *sink) noexcept
     {
       if (!have_control_file)
         return 0;
-      return copy_file(target, sink, control_file_name, true);
+      return copy_log_file(target, sink, control_file_name.str);
     }
 
-    int copy_file(const backup_target &target, const backup_sink &sink,
-                  const std::string &path, bool is_log) const noexcept
+    int copy_table_file(const backup_target *target,
+                        const backup_sink *sink, 
+                        const std::string &path) const noexcept
     {
-      return copy_file(target, sink, path.c_str(), is_log);
+      return copy_table_file(target, sink, path.c_str());
     }
 
-    int copy_file(const backup_target &target, const backup_sink &sink,
-                  const char *path, bool is_log) const noexcept
+    int copy_table_file(const backup_target *target,
+                        const backup_sink *sink,
+                        const char *path) const noexcept
+    {
+      return ::copy_datafile_to_target(path, target, sink);
+    }
+
+    int copy_log_file(const backup_target *target,
+                      const backup_sink *sink,
+                      const char *filename)
     {
 #ifndef _WIN32
-      int ret_val{0};
-      int src_fd{openat(is_log ? logdir_fd : datadir_fd, path, O_RDONLY)};
+      int src_fd = openat(logdir_fd, filename, O_RDONLY);
       if (src_fd < 0)
       {
-        my_error(ER_CANT_OPEN_FILE, MYF(0), path, errno);
+        my_error(ER_CANT_OPEN_FILE, MYF(0),
+                 build_path(maria_data_root, filename).c_str(),
+                 errno);
         return 1;
       }
-      int tgt_fd{sink.stream};
-      if (tgt_fd == sink.NO_STREAM)
-      {
-        tgt_fd= openat(target.fd, path,
-                       O_CREAT | O_EXCL | O_WRONLY, 0666);
-        if (tgt_fd < 0)
-        {
-          my_error(ER_CANT_CREATE_FILE, MYF(0), path, errno);
-          ret_val= 1;
-        }
-        else
-        {
-          ret_val= copy_entire_file(src_fd, tgt_fd);
-          if (ret_val | close(tgt_fd))
-          {
-          write_error:
-            my_error(ER_ERROR_ON_WRITE, MYF(0), path, errno);
-            ret_val= 1;
-          }
-        }
-      }
-      else
-      {
-        uint64_t end= uint64_t(lseek(src_fd, 0, SEEK_END));
-        if (backup_stream_start(tgt_fd, path, 0644, end, nullptr, 0) ||
-            backup_stream_append(src_fd, tgt_fd, 0, end))
-          goto write_error;
-        if (size_t pad= size_t(end) & 511)
-          if (backup_stream_write(tgt_fd, zerobuf, 512 - pad))
-            goto write_error;
-      }
-
+      int ret_val=  copy_fd_to_target(src_fd, target, filename, sink);
       close(src_fd);
       return ret_val;
 #else
-      const std::string src_path= build_path(is_log ? maria_data_root : mysql_real_data_home, path);
-
-      if (sink.stream == sink.NO_STREAM)
-      {
-        const std::string dest_path= build_path(target.path, path);
-        if (!CopyFileEx(src_path.c_str(), dest_path.c_str(), nullptr, nullptr, nullptr,
-                        COPY_FILE_NO_BUFFERING))
-        {
-          my_osmaperr(GetLastError());
-          my_error(ER_CANT_CREATE_FILE, MYF(0), dest_path.c_str(), errno);
-          return 1;
-        }
-      }
-      else
-      {
-        HANDLE src, dst{sink.stream};
-        for (;;)
-        {
-          src= CreateFile(src_path.c_str(), GENERIC_READ,
-                          FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-                          my_win_file_secattr(), OPEN_EXISTING,
-                          FILE_ATTRIBUTE_NORMAL, nullptr);
-          if (src != INVALID_HANDLE_VALUE)
-            break;
-          switch (GetLastError()) {
-          case ERROR_SHARING_VIOLATION:
-          case ERROR_LOCK_VIOLATION:
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            continue;
-          }
-
-          my_osmaperr(GetLastError());
-          my_error(ER_FILE_NOT_FOUND, MYF(ME_ERROR_LOG), src_path.c_str(),
-                   errno);
-          return -1;
-        }
-
-        LARGE_INTEGER li;
-        if (!GetFileSizeEx(src, &li))
-        {
-        write_error:
-          my_osmaperr(GetLastError());
-          my_error(ER_ERROR_ON_WRITE, MYF(0), path, errno);
-          if (src != INVALID_HANDLE_VALUE)
-            CloseHandle(src);
-          return -1;
-        }
-
-        if (backup_stream_start(dst, path, 0644, li.QuadPart, nullptr, 0) ||
-            backup_stream_append_plain(src, dst, 0, li.QuadPart))
-          goto write_error;
-
-        if (size_t pad= size_t(li.LowPart) & 511)
-          if (backup_stream_write(dst, zerobuf, 512 - pad))
-            goto write_error;
-        if (!CloseHandle(src))
-        {
-          src= INVALID_HANDLE_VALUE;
-          goto write_error;
-        }
-      }
-      return 0;
+      return copy_entire_file(build_path(maria_data_root, filename).c_str(),
+                              filename, target, sink);
 #endif
     }
 
-    static bool match_suffix(const char* suffix1, const char* suffix2) noexcept
+    static bool match_ext(const char* ext1, const char* ext2) noexcept
     {
-      return !memcmp(suffix1, suffix2, suffix_len);
+      return memcmp(ext1, ext2, ext_len) == 0;
     }
 
-    /* Match if suffix is one of the "other" extensions we need to copy */
-    static bool match_misc_ext(const char* suffix_str) noexcept
+    static bool begins_with(const LEX_CSTRING &str, const LEX_CSTRING &prefix) noexcept
     {
-      uint32_t suffix;
-      static_assert (suffix_len == sizeof(suffix));
-      memcpy(&suffix, suffix_str, suffix_len);
-      switch (suffix) {
-#ifdef WORDS_BIGENDIAN
-      case 0x2e41524d: /* .ARM ENGINE=ARCHIVE metadata */
-      case 0x2e41525a: /* .ARZ ENGINE=ARCHIVE compressed data */
-      case 0x2e43534d: /* .CSM ENGINE=CSV metadata */
-      case 0x2e435356: /* .CSV ENGINE=CSV data ("comma separated values") */
-      case 0x2e4d5247: /* .MRG ENGINE=MRG_MyISAM */
-      case 0x2e4d5944: /* .MYD ENGINE=MyISAM data heap */
-      case 0x2e4d5949: /* .MYI ENGINE=MyISAM indexes */
-      case 0x2e66726d: /* .frm form (SHOW CREATE TABLE) */
-      case 0x2e706172: /* .par PARTITION metadata */
-#else
-      case 0x4d52412e: /* .ARM ENGINE=ARCHIVE metadata */
-      case 0x5a52412e: /* .ARZ ENGINE=ARCHIVE compressed data */
-      case 0x4d53432e: /* .CSM ENGINE=CSV metadata */
-      case 0x5653432e: /* .CSV ENGINE=CSV data ("comma separated values") */
-      case 0x47524d2e: /* .MRG ENGINE=MRG_MyISAM */
-      case 0x44594d2e: /* .MYD ENGINE=MyISAM data heap */
-      case 0x49594d2e: /* .MYI ENGINE=MyISAM indexes */
-      case 0x6d72662e: /* .frm form (SHOW CREATE TABLE) */
-      case 0x7261702e: /* .par PARTITION metadata */
-#endif
-        return true;
-      default:
+      if (str.length < prefix.length)
         return false;
-      }
+      return memcmp(str.str, prefix.str, prefix.length) == 0;
     }
 
-    static bool begins_with(const char* str, const LEX_CSTRING &prefix) noexcept
+    static bool is_control_file_name(const LEX_CSTRING &str)
     {
-      return strncmp(str, prefix.str, prefix.length) == 0;
-    }
-
-    static std::string build_path(const char *base_path, const char *filename) noexcept
-    {
-      std::string path;
-      const size_t base_len= strlen(base_path);
-      const size_t filename_len= strlen(filename);
-      path.reserve(base_len + filename_len + 1);
-      path.append(base_path, base_len);
-      path+= '/';
-      path.append(filename, filename_len);
-      return path;
+      return str.length == control_file_name.length &&
+        memcmp(str.str, control_file_name.str, control_file_name.length) == 0;
     }
   };
 }
@@ -717,17 +538,12 @@ void *aria_backup_start(THD *thd, const backup_target *target,
   {
 #if 1 // FIXME: invoke these only for Aria, MyISAM, CSV but not others
   case BACKUP_PHASE_NO_DML_NON_TRANS:
-    /* FIXME: Would be better to selectively purge only the tables we need. */
     tc_purge();
     tdc_purge(true);
     break;
 #endif
   case BACKUP_PHASE_NO_DDL:
-#if 1 // FIXME: invoke these only for Aria, MyISAM, CSV but not others
-    tc_purge();
-    tdc_purge(true);
-#endif
-    if (aria_backup->start_copy_dml_safe(*target, *sink))
+    if (aria_backup->start_copy_dml_safe(target, sink))
       goto error;
     break;
   case BACKUP_PHASE_NO_COMMIT:
@@ -752,9 +568,9 @@ int aria_backup_step(THD*, const backup_target *target, backup_phase phase,
   switch (phase)
   {
   case BACKUP_PHASE_NO_DDL:
-    return aria_backup->dml_safe_copy_step(*target, *sink);
+    return aria_backup->dml_safe_copy_step(target, sink);
   case BACKUP_PHASE_NO_COMMIT:
-    return aria_backup->unsafe_copy_step(*target, *sink);
+    return aria_backup->unsafe_copy_step(target, sink);
   default:
     return 0;
   }
