@@ -31,7 +31,6 @@
 #include <algorithm>
 #include <functional>
 #include <optional>
-#include <variant>
 
 /*
   Implementation of functions declatred in ma_backup.h:
@@ -40,58 +39,6 @@
 
 namespace
 {
-  /* Utility class to implement the "backup step" interface when
-  processing several lists. It implements the logic where an item
-  is processed (copied) from the first list which has available
-  items, and a "remaining" counter accumulates the number of
-  items remaining to be processed on all lists, regardless of
-  whether an item from that list was processed or not. */
-  class Copy_from_list
-  {
-    int m_remaining {0};
-    bool m_copy_done;
-  public:
-    Copy_from_list(bool copy_done= false) noexcept
-    : m_copy_done(copy_done)
-    {
-    }
-
-    bool copy_done() const noexcept
-    {
-      return m_copy_done;
-    }
-
-    int remaining() const noexcept
-    {
-      return m_remaining;
-    }
-
-    template<typename T, typename Fn>
-    bool operator()(const T &list, std::atomic<size_t> &copied,
-                    Fn copy_action) noexcept
-    {
-      if(!m_copy_done)
-      {
-        size_t idx= copied.fetch_add(1, std::memory_order_relaxed);
-        if (idx < list.size())
-        {
-          if (copy_action(list[idx]) != 0)
-            return true;
-          m_copy_done= true;
-          m_remaining+= static_cast<int>(list.size() - idx - 1U);
-        }
-      }
-      else
-      {
-        size_t current_copied= copied.load(std::memory_order_relaxed);
-        if (current_copied < list.size())
-          m_remaining+= static_cast<int>(list.size() - current_copied);
-      }
-      return false;
-    }
-  };
-
-
   class Aria_backup
   {
   public:
@@ -148,18 +95,11 @@ namespace
     is in progress. */
     int dml_safe_copy_step(const backup_target *target, const backup_sink *sink) noexcept
     {
-      Copy_from_list copy_from_list;
-      auto copy_table_action= [this, target, sink](const table_ref &table) noexcept
-                              {
-                                return copy_table(target, sink, table);
-                              };
-      if (copy_from_list(dml_safe_table_list, dml_safe_tables_copied,
-                         copy_table_action) != 0)
-        return -1;
-      if (copy_from_list(unsafe_tables_list, unsafe_tables_copied,
-                         copy_table_action) != 0)
-        return -1;
-      return copy_from_list.remaining();
+      return copy_from_list_step(flat_table_list, tables_copied,
+                                 [this, target, sink](const table_ref &table) noexcept
+                                 {
+                                   return copy_table(target, sink, table);
+                                 });
     }
 
     /* Copy an entity that is not safe to copy if there are concurrent
@@ -173,8 +113,6 @@ namespace
     */
     int unsafe_copy_step(const backup_target *target, const backup_sink *sink) noexcept
     {
-      bool copy_done= false;
-
       /* If control file is always the first file copied and there is only
       one, it is never included in the "steps remaining" calculation.
       Should the order be changed, the calculation needs to be updated for
@@ -186,19 +124,18 @@ namespace
         {
           if (copy_control_file(target, sink) != 0)
             return -1;
-          copy_done= true;
+          size_t current_copied= log_files_copied.load(std::memory_order_relaxed);
+          return (current_copied < log_files.size()) ?
+                 static_cast<int>(log_files.size() - current_copied) :
+                 0;
         }
       }
 
-      Copy_from_list copy_from_list(copy_done);
-      if (copy_from_list(log_files, log_files_copied,
-                         [this, target, sink](const std::string &path) noexcept
-                         {
-                           return copy_log_file(target, sink, path.c_str());
-                         }) != 0)
-        return -1;
-
-      return copy_from_list.remaining();
+      return copy_from_list_step(log_files, log_files_copied,
+                                 [this, target, sink](const std::string &path) noexcept
+                                 {
+                                   return copy_log_file(target, sink, path.c_str());
+                                 });
     }
 
     int end(bool /*abort*/) noexcept
@@ -227,10 +164,8 @@ namespace
     using dir_contents = std::vector<std::string>;
     using database_dir = std::pair<dir_name, dir_contents>;
     using database_dirs = std::vector<database_dir>;
-    /* Transactional tables with checksum */
-    database_dirs dml_safe_tables;
-    /* All other Aria tables */
-    database_dirs unsafe_tables;
+    /* Collection of tables to be backed up. */
+    database_dirs tables;
     /* Aria log files */
     std::vector<std::string> log_files;
 
@@ -243,11 +178,8 @@ namespace
     using table_ref= std::pair<dir_ref, tablename_ref>;
     using table_list= std::vector<table_ref>;
 
-    /* Flattened versions of dml_safe_tables and unsafe_tables. */
-    table_list dml_safe_table_list;
-    table_list unsafe_tables_list;
-    std::atomic<size_t> dml_safe_tables_copied {0};
-    std::atomic<size_t> unsafe_tables_copied {0};
+    table_list flat_table_list;
+    std::atomic<size_t> tables_copied {0};
     std::atomic<size_t> log_files_copied {0};
     std::atomic<bool> control_file_copied {false};
 
@@ -283,9 +215,7 @@ namespace
       MY_DIR *dir_info= my_dir(dir_name, MYF(MY_WANT_STAT));
       if (!dir_info)
         return dir_error(dir_name);
-      int fail= 0;
-      dir_contents safe;
-      dir_contents unsafe;
+      dir_contents dir_tables;
       for (const fileinfo &fi :
              st_::span<const fileinfo>{dir_info->dir_entry,
                                        dir_info->number_of_files})
@@ -300,34 +230,15 @@ namespace
           {
             if (!is_tmp_table(filename))
             {
-              auto is_safe = is_safe_table(dir_name, filename.str);
-              if (std::holds_alternative<bool>(is_safe))
-              {
-                std::string table_name(filename.str, base_filename_len);
-                if (std::get<bool>(is_safe))
-                  safe.push_back(std::move(table_name));
-                else
-                  unsafe.push_back(std::move(table_name));
-              }
-              else
-              {
-                fail= std::get<int>(is_safe);
-                goto finish;
-              }
+              dir_tables.emplace_back(filename.str, base_filename_len);
             }
           }
         }
       }
-      if(!fail)
-      {
-        if (!safe.empty())
-          dml_safe_tables.emplace_back(dir_name, std::move(safe));
-        if (!unsafe.empty())
-          unsafe_tables.emplace_back(dir_name, std::move(unsafe));
-      }
-    finish:
+      if (!dir_tables.empty())
+        tables.emplace_back(dir_name, std::move(dir_tables));
       my_dirend(dir_info);
-      return fail;
+      return 0;
     }
 
     static bool is_tmp_table(const LEX_CSTRING &filename) noexcept
@@ -337,8 +248,7 @@ namespace
 
     void flatten_table_lists() noexcept
     {
-      flatten_table_list(dml_safe_tables, dml_safe_table_list);
-      flatten_table_list(unsafe_tables, unsafe_tables_list);
+      flatten_table_list(tables, flat_table_list);
     }
 
     static void flatten_table_list(const database_dirs& dirs, table_list& list) noexcept
@@ -372,60 +282,26 @@ namespace
 
     bool ensure_target_dirs(const backup_target *target) noexcept
     {
-      using string = std::string;
-      std::vector<const string*> dirs;
-      for (const database_dir &dir : dml_safe_tables)
-        dirs.push_back(&dir.first);
-      for (const database_dir &dir : unsafe_tables)
-        dirs.push_back(&dir.first);
-      std::sort(dirs.begin(), dirs.end(),
-        [](const string *a, const string *b) { return *a < *b; });
-      auto dirs_end = std::unique(dirs.begin(), dirs.end(),
-        [](const string *a, const string *b) { return *a == *b; });
-      for (auto it = dirs.begin(); it != dirs_end; ++it)
-      {
-        if (ensure_target_subdir(target, (*it)->c_str()))
+      for (const database_dir &dir : tables)
+        if(::ensure_target_subdir(target, dir.first.c_str()) != 0)
           return true;
-      }
       return false;
     }
 
-    /*
-       Create directory in the target directory if it does not exist.
-       Return 0 on success, non-0 on failure. Set errno in case of failure
-    */
-    int ensure_target_subdir(const backup_target *target, const char *name)
-      noexcept
+    template<typename T, typename Fn>
+    static int copy_from_list_step(const std::vector<T> &list,
+                                   std::atomic<size_t> &copied,
+                                   Fn copy_action)
     {
-      return ::ensure_target_subdir(target, name);
-    }
+      size_t idx= copied.fetch_add(1, std::memory_order_relaxed);
+      if (idx < list.size())
+      {
+        if (copy_action(list[idx]) != 0)
+            return -1;
+        return static_cast<int>(list.size() - idx - 1U);
+      }
 
-    /* Returns result or error code. */
-    std::variant<bool, int> is_safe_table(const char* dir_name, const char* myi_file_name)
-    {
-      ARIA_TABLE_CAPABILITIES cap;
-      std::string path= build_path(dir_name, myi_file_name);
-      File fd= my_open(path.c_str(), O_RDONLY, MYF(MY_WME));
-      if (fd < 0)
-      {
-        my_error(ER_CANT_OPEN_FILE, MYF(0), path.c_str(), my_errno);
-        return my_errno;
-      }
-      std::variant<bool, int> result;
-      mysql_mutex_lock(&THR_LOCK_maria);
-      int fail = aria_get_capabilities(fd, myi_file_name, &cap);
-      if (fail)
-      {
-        my_error(ER_FILE_CORRUPT, MYF(0), path.c_str());
-        result= fail;
-        goto end;
-      }
-      result = cap.transactional && cap.checksum;
-      aria_free_capabilities(&cap);
-end:
-      mysql_mutex_unlock(&THR_LOCK_maria);
-      my_close(fd, MYF(0));
-      return result;
+      return 0;
     }
 
     int copy_table(const backup_target *target, const backup_sink *sink,
